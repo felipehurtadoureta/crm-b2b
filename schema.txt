@@ -1,0 +1,102 @@
+| columna                                                            |
+| ------------------------------------------------------------------ |
+| activities.id uuid NOT NULL                                        |
+| activities.company_id uuid NOT NULL                                |
+| activities.contact_id uuid                                         |
+| activities.kam_id uuid NOT NULL                                    |
+| activities.call_id uuid                                            |
+| activities.deal_id uuid                                            |
+| activities.type text NOT NULL                                      |
+| activities.title text NOT NULL                                     |
+| activities.description text                                        |
+| activities.due_date date                                           |
+| activities.status text NOT NULL                                    |
+| activities.auto_generated boolean NOT NULL                         |
+| activities.created_at timestamp with time zone NOT NULL            |
+| activities.updated_at timestamp with time zone NOT NULL            |
+| calls.id uuid NOT NULL                                             |
+| calls.company_id uuid NOT NULL                                     |
+| calls.contact_id uuid                                              |
+| calls.kam_id uuid NOT NULL                                         |
+| calls.deal_id uuid                                                 |
+| calls.called_at timestamp with time zone NOT NULL                  |
+| calls.duration_minutes integer                                     |
+| calls.outcome text NOT NULL                                        |
+| calls.notes text                                                   |
+| calls.next_contact_date date                                       |
+| calls.created_at timestamp with time zone NOT NULL                 |
+| calls.updated_at timestamp with time zone NOT NULL                 |
+| calls.type text NOT NULL                                           |
+| companies.id uuid NOT NULL                                         |
+| companies.name text NOT NULL                                       |
+| companies.rut text                                                 |
+| companies.industry text                                            |
+| companies.website text                                             |
+| companies.address text                                             |
+| companies.city text                                                |
+| companies.country text NOT NULL                                    |
+| companies.phone text                                               |
+| companies.primary_contact_id uuid                                  |
+| companies.status text NOT NULL                                     |
+| companies.notes text                                               |
+| companies.created_at timestamp with time zone NOT NULL             |
+| companies.updated_at timestamp with time zone NOT NULL             |
+| company_kams.id uuid NOT NULL                                      |
+| company_kams.company_id uuid NOT NULL                              |
+| company_kams.kam_id uuid NOT NULL                                  |
+| company_kams.is_lead boolean NOT NULL                              |
+| company_kams.assigned_at timestamp with time zone NOT NULL         |
+| contacts.id uuid NOT NULL                                          |
+| contacts.company_id uuid NOT NULL                                  |
+| contacts.first_name text NOT NULL                                  |
+| contacts.last_name text NOT NULL                                   |
+| contacts.email text                                                |
+| contacts.phone text                                                |
+| contacts.position text                                             |
+| contacts.department text                                           |
+| contacts.is_primary boolean NOT NULL                               |
+| contacts.notes text                                                |
+| contacts.created_at timestamp with time zone NOT NULL              |
+| contacts.updated_at timestamp with time zone NOT NULL              |
+| contacts.is_active boolean NOT NULL                                |
+| deals.id uuid NOT NULL                                             |
+| deals.company_id uuid NOT NULL                                     |
+| deals.contact_id uuid                                              |
+| deals.kam_id uuid NOT NULL                                         |
+| deals.title text NOT NULL                                          |
+| deals.description text                                             |
+| deals.stage text NOT NULL                                          |
+| deals.probability integer NOT NULL                                 |
+| deals.expected_value numeric                                       |
+| deals.currency text NOT NULL                                       |
+| deals.expected_close date                                          |
+| deals.closed_at timestamp with time zone                           |
+| deals.lost_reason text                                             |
+| deals.created_at timestamp with time zone NOT NULL                 |
+| deals.updated_at timestamp with time zone NOT NULL                 |
+| inventory_items.id uuid NOT NULL                                   |
+| inventory_items.product_id uuid NOT NULL                           |
+| inventory_items.serial_number text NOT NULL                        |
+| inventory_items.status text NOT NULL                               |
+| inventory_items.notes text                                         |
+| inventory_items.created_at timestamp with time zone NOT NULL       |
+| inventory_items.updated_at timestamp with time zone NOT NULL       |
+| product_price_history.id uuid NOT NULL                             |
+| product_price_history.product_id uuid NOT NULL                     |
+| product_price_history.old_price numeric NOT NULL                   |
+| product_price_history.new_price numeric NOT NULL                   |
+| product_price_history.currency text NOT NULL                       |
+| product_price_history.changed_by uuid                              |
+| product_price_history.changed_at timestamp with time zone NOT NULL |
+| products.id uuid NOT NULL                                          |
+| products.name text NOT NULL                                        |
+| products.sku text                                                  |
+| products.description text                                          |
+| products.type text NOT NULL                                        |
+| products.price numeric NOT NULL                                    |
+| products.currency text NOT NULL                                    |
+| products.tax_rate numeric NOT NULL                                 |
+| products.is_active boolean NOT NULL                                |
+| products.created_at timestamp with time zone NOT NULL              |
+| products.updated_at timestamp with time zone NOT NULL              |
+| profiles.id uuid NOT NULL                                          |

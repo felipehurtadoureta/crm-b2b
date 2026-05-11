@@ -1,0 +1,61 @@
+│   App.css
+│   App.tsx
+│   index.css
+│   main.tsx
+│   vite-env.d.ts
+│
+├───assets
+│       hero.png
+│       react.svg
+│       vite.svg
+│
+├───components
+│   ├───layout
+│   │       MainLayout.tsx
+│   │       Sidebar.tsx
+│   │
+│   └───ui
+│           avatar.tsx
+│           badge.tsx
+│           button.tsx
+│           card.tsx
+│           dialog.tsx
+│           dropdown-menu.tsx
+│           input.tsx
+│           label.tsx
+│           select.tsx
+│           separator.tsx
+│           table.tsx
+│           textarea.tsx
+│
+├───hooks
+│       useAuth.ts
+│
+├───lib
+│       supabase.ts
+│       utils.ts
+│
+├───pages
+│   ├───auth
+│   │       LoginPage.tsx
+│   │
+│   ├───calls
+│   │       CallDialog.tsx
+│   │       CallsPage.tsx
+│   │
+│   ├───companies
+│   │       CompaniesPage.tsx
+│   │       CompanyDialog.tsx
+│   │
+│   ├───contacts
+│   │       ContactDialog.tsx
+│   │       ContactsPage.tsx
+│   │
+│   ├───dashboard
+│   │       DashboardPage.tsx
+│   │
+│   ├───deals
+│   ├───products
+│   └───quotes
+└───types
+        index.ts
