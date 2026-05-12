@@ -1,59 +1,59 @@
 import { useEffect, useState, useCallback } from 'react'
 import { supabase } from '@/lib/supabase'
-import type { Call, Company, Contact, Profile, Product } from '@/types'
+import type { Call, Company, Contact, Profile } from '@/types'
+import { useAuth } from '@/hooks/useAuth'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { Plus, Search, Phone, Mail, MessageCircle, Users, MapPin, FileText } from 'lucide-react'
+import { Plus, Search, Phone, Mail, MessageCircle, Users, MapPin } from 'lucide-react'
 import CallDialog from './CallDialog'
-import QuoteDialog from '@/pages/quotes/QuoteDialog'
 
 interface CallWithRelations extends Call {
   company: { name: string }
   contact: { first_name: string; last_name: string } | null
-  kam: { full_name: string }
+  kam: { id: string; full_name: string }
 }
 
 export default function CallsPage() {
+  const { profile } = useAuth()
   const [calls, setCalls]         = useState<CallWithRelations[]>([])
   const [companies, setCompanies] = useState<Company[]>([])
   const [contacts, setContacts]   = useState<Contact[]>([])
   const [kams, setKams]           = useState<Profile[]>([])
-  const [products, setProducts]   = useState<Product[]>([])
   const [loading, setLoading]     = useState(true)
   const [search, setSearch]       = useState('')
+  const [dialogOpen, setDialogOpen] = useState(false)
+  const [selected, setSelected]   = useState<Call | null>(null)
 
-  const [callDialogOpen, setCallDialogOpen] = useState(false)
-  const [selectedCall, setSelectedCall]     = useState<Call | null>(null)
-
-  const [quoteDialogOpen, setQuoteDialogOpen]   = useState(false)
-  const [quoteInitialCall, setQuoteInitialCall] = useState<Call | null>(null)
+  // Permiso por registro
+  const canEdit = (kamId: string) =>
+    profile?.role === 'super_admin' ||
+    (profile?.role === 'kam' && kamId === profile?.id)
 
   const fetchCalls = useCallback(async () => {
     setLoading(true)
     const { data } = await supabase
       .from('calls')
-      .select(`*, company:companies(name), contact:contacts(first_name, last_name), kam:profiles(full_name)`)
+      .select(`
+        *,
+        company:companies(name),
+        contact:contacts(first_name, last_name),
+        kam:profiles(id, full_name)
+      `)
       .order('called_at', { ascending: false })
     setCalls(data ?? [])
     setLoading(false)
   }, [])
 
   const fetchRelated = useCallback(async () => {
-    const [
-      { data: companiesData },
-      { data: contactsData },
-      { data: kamsData },
-      { data: productsData },
-    ] = await Promise.all([
-      supabase.from('companies').select('*').order('name'),
-      supabase.from('contacts').select('*').eq('is_active', true).order('first_name'),
-      supabase.from('profiles').select('*').eq('is_active', true).order('full_name'),
-      supabase.from('products').select('*').eq('is_active', true).order('name'),
-    ])
+    const [{ data: companiesData }, { data: contactsData }, { data: kamsData }] =
+      await Promise.all([
+        supabase.from('companies').select('*').order('name'),
+        supabase.from('contacts').select('*').eq('is_active', true).order('first_name'),
+        supabase.from('profiles').select('*').eq('is_active', true).order('full_name'),
+      ])
     setCompanies(companiesData ?? [])
     setContacts(contactsData ?? [])
     setKams(kamsData ?? [])
-    setProducts((productsData as Product[]) ?? [])
   }, [])
 
   useEffect(() => {
@@ -89,6 +89,9 @@ export default function CallsPage() {
     venta_cerrada:         { label: 'Venta cerrada',         color: 'bg-purple-100 text-purple-700' },
   }
 
+  const openCreate = () => { setSelected(null); setDialogOpen(true) }
+  const openEdit   = (c: Call) => { setSelected(c); setDialogOpen(true) }
+
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
@@ -96,16 +99,17 @@ export default function CallsPage() {
           <h2 className="text-2xl font-semibold text-gray-900">Interacciones</h2>
           <p className="text-gray-500 mt-1">{calls.length} interacciones registradas</p>
         </div>
-        <Button onClick={() => { setSelectedCall(null); setCallDialogOpen(true) }}
-          className="flex items-center gap-2">
-          <Plus size={16} /> Nueva interacción
-        </Button>
+        {profile?.role !== 'reader' && (
+          <Button onClick={openCreate} className="flex items-center gap-2">
+            <Plus size={16} /> Nueva interacción
+          </Button>
+        )}
       </div>
 
       <div className="relative w-full max-w-sm">
         <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
         <Input
-          placeholder="Buscar por empresa o contacto..."
+          placeholder="Buscar por empresa, contacto o KAM..."
           value={search}
           onChange={e => setSearch(e.target.value)}
           className="pl-9"
@@ -138,8 +142,9 @@ export default function CallsPage() {
                 </td>
               </tr>
             ) : filtered.map(call => {
-              const outcome   = outcomeLabel[call.outcome]
-              const localDate = new Date(call.called_at).toLocaleDateString('es-CL')
+              const outcome    = outcomeLabel[call.outcome]
+              const localDate  = new Date(call.called_at).toLocaleDateString('es-CL')
+              const userCanEdit = canEdit(call.kam?.id ?? '')
               return (
                 <tr key={call.id} className="border-b last:border-0 hover:bg-gray-50 transition-colors">
                   <td className="px-4 py-3 text-gray-600">{localDate}</td>
@@ -164,21 +169,16 @@ export default function CallsPage() {
                       ? new Date(call.next_contact_date + 'T00:00:00').toLocaleDateString('es-CL')
                       : '—'}
                   </td>
-                  <td className="px-4 py-3">
-                    <div className="flex items-center justify-end gap-1">
-                      <Button
-                        variant="ghost" size="sm"
-                        className="gap-1 text-xs text-blue-600 hover:text-blue-700 hover:bg-blue-50"
-                        onClick={() => { setQuoteInitialCall(call); setQuoteDialogOpen(true) }}
-                        title="Crear cotización desde esta interacción"
-                      >
-                        <FileText size={13} /> Cotización
-                      </Button>
-                      <Button variant="ghost" size="sm"
-                        onClick={() => { setSelectedCall(call); setCallDialogOpen(true) }}>
+                  <td className="px-4 py-3 text-right">
+                    {userCanEdit ? (
+                      <Button variant="ghost" size="sm" onClick={() => openEdit(call)}>
                         Editar
                       </Button>
-                    </div>
+                    ) : (
+                      <Button variant="ghost" size="sm" className="text-gray-300 cursor-default" disabled>
+                        Editar
+                      </Button>
+                    )}
                   </td>
                 </tr>
               )
@@ -188,31 +188,13 @@ export default function CallsPage() {
       </div>
 
       <CallDialog
-        open={callDialogOpen}
-        onClose={() => setCallDialogOpen(false)}
-        call={selectedCall}
+        open={dialogOpen}
+        onClose={() => setDialogOpen(false)}
+        call={selected}
         companies={companies}
         contacts={contacts}
         kams={kams}
         onSaved={fetchCalls}
-        onCreateQuote={(call) => {        // ← agregar
-          setCallDialogOpen(false)
-          setQuoteInitialCall(call)
-          setQuoteDialogOpen(true)
-        }}
-      />
-
-      <QuoteDialog
-        open={quoteDialogOpen}
-        onClose={() => setQuoteDialogOpen(false)}
-        quote={null}
-        companies={companies}
-        contacts={contacts}
-        kams={kams}
-        products={products}
-        initialCompanyId={quoteInitialCall?.company_id}
-        initialCallId={quoteInitialCall?.id}
-        onSaved={() => setQuoteDialogOpen(false)}
       />
     </div>
   )
