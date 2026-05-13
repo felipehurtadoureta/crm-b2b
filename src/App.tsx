@@ -8,7 +8,6 @@ import ContactsPage from '@/pages/contacts/ContactsPage'
 import CallsPage from '@/pages/calls/CallsPage'
 import ProductsPage from '@/pages/products/ProductsPage'
 import InventoryPage from '@/pages/products/InventoryPage'
-import DealsPage from '@/pages/deals/DealsPage'
 import QuotesPage from '@/pages/quotes/QuotesPage'
 
 export default function App() {
@@ -34,7 +33,6 @@ export default function App() {
           <Route path="/companies" element={<CompaniesPage />} />
           <Route path="/contacts"  element={<ContactsPage />} />
           <Route path="/calls"     element={<CallsPage />} />
-          <Route path="/deals"     element={<DealsPage />} />
           <Route path="/quotes"    element={<QuotesPage />} />
           <Route path="/sales"     element={<QuotesPage defaultStatus="orden_de_venta" />} />
           <Route path="/products"  element={<ProductsPage />} />

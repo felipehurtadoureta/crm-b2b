@@ -45,24 +45,6 @@ export interface Contact {
   is_active: boolean
 }
 
-export interface Deal {
-  id: string
-  company_id: string
-  contact_id?: string
-  kam_id: string
-  title: string
-  description?: string
-  stage: 'nuevo' | 'en_negociacion' | 'propuesta_enviada' | 'ganado' | 'perdido'
-  probability: number
-  expected_value?: number
-  currency: 'CLP' | 'USD'
-  expected_close?: string
-  closed_at?: string
-  lost_reason?: string
-  created_at: string
-  updated_at: string
-}
-
 export interface Call {
   id: string
   company_id: string
@@ -109,60 +91,53 @@ export interface Product {
   updated_at: string
 }
 
+export type QuoteStage =
+  | 'borrador'
+  | 'en_negociacion'
+  | 'enviada'
+  | 'aceptada'
+  | 'rechazada'
+  | 'orden_de_venta'
+
 export interface Quote {
   id: string
   company_id: string
   contact_id?: string
   kam_id: string
   call_id?: string
-  deal_id?: string
   quote_number: string
-  status: 'borrador' | 'enviada' | 'aceptada' | 'rechazada' | 'orden_de_venta'
+  title?: string
+  stage: QuoteStage
+  probability: number
   currency: 'CLP' | 'USD' | 'UF'
-  close_probability: number
   subtotal: number
   tax_amount: number
   total: number
   valid_until?: string
+  expected_close?: string
   notes?: string
+  lost_reason?: string
+  closed_at?: string
   sent_at?: string
   responded_at?: string
+  is_tax_exempt?: boolean
+  discount_type?: string
+  discount_value?: number
+  discount_amount?: number
+  usd_clp_rate?: number
+  uf_clp_rate?: number
+  exchange_rate_date?: string
   created_at: string
   updated_at: string
 }
 
-export interface SalesOrder {
+export interface QuoteItem {
   id: string
-  quote_id?: string
-  company_id: string
-  contact_id?: string
-  kam_id: string
-  order_number: string
-  status: 'pendiente' | 'confirmada' | 'entregada' | 'cancelada'
-  currency: 'CLP' | 'USD'
-  subtotal: number
-  tax_amount: number
-  total: number
-  notes?: string
-  confirmed_at?: string
-  delivered_at?: string
-  created_at: string
-  updated_at: string
-}
-
-export interface SalesOrderItem {
-  id: string
-  sales_order_id: string
+  quote_id: string
   product_id?: string
-  inventory_item_id?: string
   product_name: string
-  serial_number?: string
+  product_currency?: string
   quantity: number
   unit_price: number
-  tax_rate: number
-  discount_pct: number
-  line_subtotal: number
-  line_tax: number
-  line_total: number
-  created_at: string
+  subtotal: number
 }
