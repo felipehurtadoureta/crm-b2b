@@ -20,7 +20,7 @@ const NO_INVENTORY = '__none__'
 const NO_QUOTE     = '__none__'
 
 type InvOption  = { id: string; serial_number: string }
-type ProductOpt = Pick<Product, 'id' | 'name' | 'type' | 'price' | 'tax_rate'>
+type ProductOpt = Pick<Product, 'id' | 'name' | 'type' | 'price' | 'tax_rate' | 'has_inventory'>
 type QuoteOpt   = { id: string; quote_number: string }
 
 type ItemForm = {
@@ -242,12 +242,13 @@ export default function SalesOrderDialog({ open, onClose, orderId, onSaved }: Pr
       product_name:      p.name,
       unit_price:        Number(p.price),
       tax_rate:          Number(p.tax_rate),
-      _is_inventory:     p.type === 'inventory',
+      _is_inventory:     p.type === 'inventory' || (p.type === 'product' && (p.has_inventory ?? false)),
       inventory_item_id: NO_INVENTORY,
       serial_number:     '',
     }
 
-    if (p.type === 'inventory') {
+    const loadSerials = p.type === 'inventory' || (p.type === 'product' && (p.has_inventory ?? false))
+    if (loadSerials) {
       const { data } = await supabase
         .from('inventory_items').select('id,serial_number')
         .eq('product_id', pid).eq('status', 'disponible')

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { supabase } from '@/lib/supabase'
 import { COMPANY } from '@/config/company'
+import { fetchCrmAppSettingsMerged, mergedToPrintIssuer } from '@/lib/crmAppSettings'
 import { Button } from '@/components/ui/button'
 import { Printer, X } from 'lucide-react'
 
@@ -14,6 +15,10 @@ interface QuoteItem {
   line_tax: number
   line_total: number
   product_currency?: string
+  /** v2 cotización */
+  line_kind?: string
+  pricing_model?: string
+  procurement_plan?: string | null
 }
 
 interface QuoteData {
@@ -55,11 +60,35 @@ const fmtNum = (n: number, cur: string) => {
 const fmtDate = (d: string) =>
   new Date(d).toLocaleDateString('es-CL', { day: '2-digit', month: 'long', year: 'numeric' })
 
+/** Emisor en impresión (defaults + posible merge desde Supabase) */
+type PrintIssuer = {
+  name: string
+  rut: string
+  address: string
+  phone: string
+  email: string
+  website: string
+}
+
 export default function QuotePrintView({ quoteId, onClose }: Props) {
   const [quote, setQuote]     = useState<QuoteData | null>(null)
   const [items, setItems]     = useState<QuoteItem[]>([])
   const [loading, setLoading] = useState(true)
   const [err, setErr]         = useState('')
+  const [issuer, setIssuer]   = useState<PrintIssuer>({
+    name: COMPANY.name,
+    rut: COMPANY.rut,
+    address: COMPANY.address,
+    phone: COMPANY.phone,
+    email: COMPANY.email,
+    website: COMPANY.website,
+  })
+
+  useEffect(() => {
+    void fetchCrmAppSettingsMerged()
+      .then(m => setIssuer(mergedToPrintIssuer(m)))
+      .catch(() => { /* mantiene valores de COMPANY */ })
+  }, [])
 
   useEffect(() => {
     setLoading(true)
@@ -157,10 +186,10 @@ export default function QuotePrintView({ quoteId, onClose }: Props) {
         <div style={{ background: '#1e293b', color: 'white', padding: '28px 36px' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
             <div>
-              <div style={{ fontSize: 22, fontWeight: 700, letterSpacing: 1 }}>{COMPANY.name}</div>
-              <div style={{ fontSize: 11, marginTop: 4, opacity: 0.7 }}>RUT {COMPANY.rut}</div>
-              <div style={{ fontSize: 11, marginTop: 2, opacity: 0.7 }}>{COMPANY.address}</div>
-              <div style={{ fontSize: 11, marginTop: 2, opacity: 0.7 }}>{COMPANY.phone} · {COMPANY.email}</div>
+              <div style={{ fontSize: 22, fontWeight: 700, letterSpacing: 1 }}>{issuer.name}</div>
+              <div style={{ fontSize: 11, marginTop: 4, opacity: 0.7 }}>RUT {issuer.rut}</div>
+              <div style={{ fontSize: 11, marginTop: 2, opacity: 0.7 }}>{issuer.address}</div>
+              <div style={{ fontSize: 11, marginTop: 2, opacity: 0.7 }}>{issuer.phone} · {issuer.email}</div>
             </div>
             <div style={{ textAlign: 'right' }}>
               <div style={{ fontSize: 20, fontWeight: 700, letterSpacing: 2 }}>{title}</div>
@@ -228,9 +257,24 @@ export default function QuotePrintView({ quoteId, onClose }: Props) {
               </tr>
             </thead>
             <tbody>
-              {items.map((item, idx) => (
+              {items.map((item, idx) => {
+                const metaParts: string[] = []
+                if (item.pricing_model === 'monthly_rental') metaParts.push('Arriendo mensual')
+                if (item.line_kind === 'procure') {
+                  if (item.procurement_plan === 'purchase') metaParts.push('Compra para el proyecto')
+                  else if (item.procurement_plan === 'manufacture') metaParts.push('Fabricación')
+                  else metaParts.push('Compra / fabricación')
+                }
+                return (
                 <tr key={item.id} style={{ borderBottom: '1px solid #f1f5f9', background: idx % 2 === 0 ? 'white' : '#fafafa' }}>
-                  <td style={{ padding: '9px 10px', color: '#1e293b' }}>{item.product_name}</td>
+                  <td style={{ padding: '9px 10px', color: '#1e293b' }}>
+                    {item.product_name}
+                    {metaParts.length > 0 && (
+                      <span style={{ display: 'block', fontSize: 10, color: '#64748b', marginTop: 3 }}>
+                        {metaParts.join(' · ')}
+                      </span>
+                    )}
+                  </td>
                   <td style={{ padding: '9px 10px', textAlign: 'center', color: '#475569' }}>
                     {Number(item.quantity) % 1 === 0 ? Math.round(Number(item.quantity)) : Number(item.quantity)}
                   </td>
@@ -246,7 +290,8 @@ export default function QuotePrintView({ quoteId, onClose }: Props) {
                     {sym} {fmtNum(Number(item.line_subtotal ?? Number(item.unit_price) * Number(item.quantity)), cur)}
                   </td>
                 </tr>
-              ))}
+                )
+              })}
             </tbody>
           </table>
         </div>
@@ -291,7 +336,7 @@ export default function QuotePrintView({ quoteId, onClose }: Props) {
 
         {/* Footer */}
         <div style={{ background: '#f8fafc', borderTop: '1px solid #e2e8f0', padding: '14px 36px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <div style={{ fontSize: 10, color: '#94a3b8' }}>{COMPANY.name} · {COMPANY.rut} · {COMPANY.website}</div>
+          <div style={{ fontSize: 10, color: '#94a3b8' }}>{issuer.name} · {issuer.rut} · {issuer.website}</div>
           <div style={{ fontSize: 10, color: '#94a3b8' }}>{quote.quote_number}</div>
         </div>
       </div>

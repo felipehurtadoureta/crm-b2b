@@ -5,7 +5,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import { Plus, Trash2, MapPin } from 'lucide-react'
-import type { InventoryItem } from '@/types'
+import type { InventoryCustody, InventoryItem, ProductCurrency } from '@/types'
 
 const STATUS_COLOR: Record<string, string> = {
   disponible: 'bg-green-100 text-green-700',
@@ -15,6 +15,13 @@ const STATUS_COLOR: Record<string, string> = {
 }
 
 const STATUS_NEEDS_LOCATION = ['vendido', 'reservado']
+
+const CUSTODY_OPTIONS: { value: InventoryCustody; label: string }[] = [
+  { value: 'bodega', label: 'Bodega' },
+  { value: 'en_cliente', label: 'En cliente' },
+  { value: 'prestamo', label: 'Préstamo' },
+  { value: 'transito', label: 'Tránsito' },
+]
 
 interface ItemWithLocation extends InventoryItem {
   destination_notes?: string
@@ -28,11 +35,20 @@ interface LocationForm {
   installed_address: string
 }
 
-export default function InventoryPanel({ productId }: { productId: string }) {
-  const [items, setItems]       = useState<ItemWithLocation[]>([])
-  const [serial, setSerial]     = useState('')
-  const [notes, setNotes]       = useState('')
-  const [loading, setLoading]   = useState(false)
+interface Props {
+  productId: string
+  /** Tras mutar seriales (p. ej. refrescar totales en el modal padre) */
+  onItemsChanged?: () => void
+}
+
+export default function InventoryPanel({ productId, onItemsChanged }: Props) {
+  const [items, setItems]               = useState<ItemWithLocation[]>([])
+  const [serial, setSerial]             = useState('')
+  const [notes, setNotes]               = useState('')
+  const [custodyNew, setCustodyNew]     = useState<InventoryCustody>('bodega')
+  const [refPrice, setRefPrice]         = useState('')
+  const [refCurrency, setRefCurrency]   = useState<ProductCurrency>('CLP')
+  const [loading, setLoading]           = useState(false)
   const [locationForm, setLocationForm] = useState<LocationForm | null>(null)
 
   async function load() {
@@ -49,16 +65,33 @@ export default function InventoryPanel({ productId }: { productId: string }) {
   async function add() {
     if (!serial.trim()) return
     setLoading(true)
-    await supabase.from('inventory_items').insert({
+    const parsedRef = parseFloat(refPrice.replace(',', '.'))
+    const payload: Record<string, unknown> = {
       product_id:    productId,
       serial_number: serial.trim(),
       status:        'disponible',
+      custody:       custodyNew,
       notes:         notes.trim() || null,
-    })
+    }
+    if (!Number.isNaN(parsedRef) && parsedRef >= 0) {
+      payload.reference_price = parsedRef
+      payload.reference_currency = refCurrency
+    }
+    await supabase.from('inventory_items').insert(payload)
     setSerial('')
     setNotes('')
+    setCustodyNew('bodega')
+    setRefPrice('')
+    setRefCurrency('CLP')
     await load()
+    onItemsChanged?.()
     setLoading(false)
+  }
+
+  async function updateCustodyRow(id: string, value: string) {
+    await supabase.from('inventory_items').update({ custody: value }).eq('id', id)
+    await load()
+    onItemsChanged?.()
   }
 
   function handleStatusChange(item: ItemWithLocation, newStatus: string) {
@@ -86,7 +119,8 @@ export default function InventoryPanel({ productId }: { productId: string }) {
       installed_address,
     }).eq('id', id)
     setLocationForm(null)
-    load()
+    await load()
+    onItemsChanged?.()
   }
 
   async function confirmLocation() {
@@ -101,7 +135,8 @@ export default function InventoryPanel({ productId }: { productId: string }) {
 
   async function remove(id: string) {
     await supabase.from('inventory_items').delete().eq('id', id)
-    load()
+    await load()
+    onItemsChanged?.()
   }
 
   const disponibles = items.filter(i => i.status === 'disponible').length
@@ -115,24 +150,54 @@ export default function InventoryPanel({ productId }: { productId: string }) {
       </div>
 
       {/* Agregar serial */}
-      <div className="px-4 py-3 border-b bg-white">
-        <div className="flex gap-2">
+      <div className="px-4 py-3 border-b bg-white space-y-2">
+        <div className="flex flex-wrap gap-2">
           <Input
             placeholder="N° de serie"
             value={serial}
             onChange={e => setSerial(e.target.value)}
-            className="h-8 text-sm"
+            className="h-8 text-sm flex-1 min-w-[120px]"
             onKeyDown={e => e.key === 'Enter' && add()}
           />
           <Input
             placeholder="Notas (opcional)"
             value={notes}
             onChange={e => setNotes(e.target.value)}
-            className="h-8 text-sm"
+            className="h-8 text-sm flex-1 min-w-[140px]"
           />
-          <Button size="sm" onClick={add} disabled={loading || !serial.trim()} className="h-8 gap-1 shrink-0">
+          <select
+            value={custodyNew}
+            onChange={e => setCustodyNew(e.target.value as InventoryCustody)}
+            className="h-8 text-xs rounded-md border border-gray-200 px-2 bg-white shrink-0"
+          >
+            {CUSTODY_OPTIONS.map(o => (
+              <option key={o.value} value={o.value}>{o.label}</option>
+            ))}
+          </select>
+          <Button size="sm" onClick={() => void add()} disabled={loading || !serial.trim()} className="h-8 gap-1 shrink-0">
             <Plus size={13} /> Agregar
           </Button>
+        </div>
+        <div className="flex flex-wrap items-center gap-2 text-xs text-gray-500">
+          <span className="shrink-0">Valor referencia (opcional):</span>
+          <Input
+            type="number"
+            min={0}
+            step="any"
+            placeholder="Ej: 150000"
+            value={refPrice}
+            onChange={e => setRefPrice(e.target.value)}
+            className="h-8 text-sm w-28"
+          />
+          <select
+            value={refCurrency}
+            onChange={e => setRefCurrency(e.target.value as ProductCurrency)}
+            className="h-8 text-xs rounded-md border border-gray-200 px-2 bg-white"
+          >
+            <option value="CLP">CLP</option>
+            <option value="USD">USD</option>
+            <option value="UF">UF</option>
+          </select>
         </div>
       </div>
 
@@ -142,16 +207,26 @@ export default function InventoryPanel({ productId }: { productId: string }) {
           <p className="px-4 py-4 text-sm text-gray-400">Sin seriales registrados</p>
         ) : items.map(item => (
           <div key={item.id} className="px-4 py-2.5 space-y-1 hover:bg-gray-50">
-            <div className="flex items-center gap-3 text-sm">
-              <span className="font-mono font-medium flex-1">{item.serial_number}</span>
+            <div className="flex flex-wrap items-center gap-2 text-sm">
+              <span className="font-mono font-medium flex-1 min-w-[100px]">{item.serial_number}</span>
               {item.notes && (
                 <span className="text-gray-400 text-xs truncate max-w-[120px]">{item.notes}</span>
               )}
               <select
+                value={(item.custody as string) ?? 'bodega'}
+                onChange={e => void updateCustodyRow(item.id, e.target.value)}
+                disabled={item.status === 'vendido'}
+                className="text-xs rounded-md border border-gray-200 px-2 py-1 bg-white shrink-0"
+              >
+                {CUSTODY_OPTIONS.map(o => (
+                  <option key={o.value} value={o.value}>{o.label}</option>
+                ))}
+              </select>
+              <select
                 value={item.status}
                 onChange={e => handleStatusChange(item, e.target.value)}
                 disabled={item.status === 'vendido'}
-                className={`text-xs rounded-full px-2 py-0.5 border-0 font-medium cursor-pointer ${STATUS_COLOR[item.status]}`}
+                className={`text-xs rounded-full px-2 py-0.5 border-0 font-medium cursor-pointer shrink-0 ${STATUS_COLOR[item.status]}`}
               >
                 <option value="disponible">Disponible</option>
                 <option value="reservado">Reservado</option>
@@ -160,13 +235,23 @@ export default function InventoryPanel({ productId }: { productId: string }) {
               </select>
               {item.status !== 'vendido' && (
                 <button
-                  onClick={() => remove(item.id)}
-                  className="text-gray-300 hover:text-red-400 transition-colors"
+                  type="button"
+                  onClick={() => void remove(item.id)}
+                  className="text-gray-300 hover:text-red-400 transition-colors shrink-0"
                 >
                   <Trash2 size={13} />
                 </button>
               )}
             </div>
+
+            {item.reference_price != null && (
+              <p className="text-xs text-gray-500 pl-0.5">
+                Ref.: {item.reference_currency ?? 'CLP'}{' '}
+                {typeof item.reference_price === 'number'
+                  ? item.reference_price.toLocaleString('es-CL')
+                  : item.reference_price}
+              </p>
+            )}
 
             {/* Mostrar ubicación si existe */}
             {(item.installed_address || item.destination_notes) && (
@@ -212,7 +297,7 @@ export default function InventoryPanel({ productId }: { productId: string }) {
             <Button size="sm" variant="outline" onClick={() => setLocationForm(null)}>
               Cancelar
             </Button>
-            <Button size="sm" onClick={confirmLocation}>
+            <Button size="sm" onClick={() => void confirmLocation()}>
               Confirmar
             </Button>
           </div>

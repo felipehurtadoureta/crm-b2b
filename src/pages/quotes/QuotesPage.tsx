@@ -1,6 +1,11 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { useLocation, useNavigate } from 'react-router-dom'
+import { useQueryClient } from '@tanstack/react-query'
+import { useLocation, useNavigate, useSearchParams, Link } from 'react-router-dom'
 import { supabase } from '@/lib/supabase'
+import {
+  releaseReservationsForQuote,
+  syncQuoteInventoryForStage,
+} from '@/lib/quoteInventoryReservation'
 import { useAuth } from '@/hooks/useAuth'
 import type { Company, Contact, Profile, Product, Quote, QuoteStage } from '@/types'
 import QuoteDialog from './QuoteDialog'
@@ -34,6 +39,10 @@ const STAGES: {
 
 const STAGE_MAP = Object.fromEntries(STAGES.map(s => [s.key, s]))
 
+/** Mismas etapas que el dashboard considera “pipeline activo” */
+const PIPELINE_STAGES: QuoteStage[] = ['borrador', 'en_negociacion', 'enviada']
+const WON_STAGES_FILTER: QuoteStage[] = ['aceptada', 'orden_de_venta']
+
 const fmtCurrency = (amount: number, currency: string) => {
   if (currency === 'CLP') return new Intl.NumberFormat('es-CL', { style: 'currency', currency: 'CLP', maximumFractionDigits: 0 }).format(amount)
   if (currency === 'USD') return `US$ ${new Intl.NumberFormat('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(amount)}`
@@ -43,10 +52,12 @@ const fmtCurrency = (amount: number, currency: string) => {
 const fmtDate  = (d: string) => new Date(d.length === 10 ? d + 'T00:00:00' : d).toLocaleDateString('es-CL', { day: '2-digit', month: '2-digit', year: 'numeric' })
 const fmtShort = (d: string) => new Date(d.length === 10 ? d + 'T00:00:00' : d).toLocaleDateString('es-CL', { day: '2-digit', month: 'short' })
 
-export default function QuotesPage() {
+export default function QuotesPage({ initialStage }: { initialStage?: QuoteStage } = {}) {
   const { profile, loading: authLoading } = useAuth()
+  const queryClient = useQueryClient()
   const location = useLocation()
   const navigate = useNavigate()
+  const [searchParams, setSearchParams] = useSearchParams()
 
   const [quotes, setQuotes]           = useState<QuoteRow[]>([])
   const [companies, setCompanies]     = useState<Company[]>([])
@@ -60,18 +71,21 @@ export default function QuotesPage() {
   const [dialogOpen, setDialogOpen]         = useState(false)
   const [selected, setSelected]             = useState<QuoteRow | null>(null)
   const [search, setSearch]                 = useState('')
-  const [filterStage, setFilterStage]       = useState('__all__')
+  const [filterStage, setFilterStage]       = useState<string>(() => initialStage ?? '__all__')
   const [deleteId, setDeleteId]             = useState<string | null>(null)
   const [deleting, setDeleting]             = useState(false)
   const [dragOver, setDragOver]             = useState<QuoteStage | null>(null)
   const [highlightId, setHighlightId]       = useState<string | undefined>()
+  /** Filtros especiales activados desde URL (panel / enlaces) */
+  const [cierres30Only, setCierres30Only]   = useState(false)
+  const [ganadasMesOnly, setGanadasMesOnly] = useState(false)
+  const prevQsRef = useRef<string | null>(null)
   const [initialCompanyId, setInitialCompanyId] = useState<string | undefined>()
   const [initialContactId, setInitialContactId] = useState<string | undefined>()
   const [initialCallId, setInitialCallId]   = useState<string | undefined>()
   const draggingId = useRef<string | null>(null)
 
-  const canEdit = (kamId: string) =>
-    profile?.role === 'super_admin' || (profile?.role === 'kam' && kamId === profile?.id)
+  const urlQuoteId = searchParams.get('quoteId')
 
   // Guardar state en ref inmediatamente al montar, antes de que se borre
   const pendingState = useRef<{
@@ -79,11 +93,75 @@ export default function QuotesPage() {
     companyId?: string; contactId?: string; callId?: string
   } | null>(location.state as any ?? null)
 
-  // Limpiar URL de inmediato (solo una vez al montar)
+  const canEdit = (kamId: string) =>
+    profile?.role === 'super_admin' || (profile?.role === 'kam' && kamId === profile?.id)
+
+  // Enlace profundo: una cotización en Kanban (p. ej. desde seguimiento comercial)
+  useEffect(() => {
+    if (searchParams.get('quoteId')) {
+      setView('kanban')
+      return
+    }
+    const v = searchParams.get('view')
+    if (v === 'table') setView('table')
+    if (v === 'kanban') setView('kanban')
+  }, [searchParams])
+
+  useEffect(() => {
+    const qid = searchParams.get('quoteId')
+    if (!qid || !quotesReady || loading || view !== 'kanban') return
+    setHighlightId(qid)
+    const t = window.setTimeout(() => {
+      document.getElementById(`kanban-card-${qid}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    }, 200)
+    return () => window.clearTimeout(t)
+  }, [searchParams, quotesReady, loading, view])
+
+  // Limpiar state de navegación conservando query (filtros del panel)
   useEffect(() => {
     if (pendingState.current)
-      navigate(location.pathname, { replace: true, state: null })
+      navigate({ pathname: location.pathname, search: location.search }, { replace: true, state: null })
   }, []) // eslint-disable-line
+
+  // Aplicar filtros desde URL (?pipeline=activas, ?stage=…, ?cierres=30, ?ganadas=mes)
+  useEffect(() => {
+    const qs = searchParams.toString()
+    const pipeline = searchParams.get('pipeline')
+    const stage = searchParams.get('stage')
+    const cierres = searchParams.get('cierres')
+    const ganadas = searchParams.get('ganadas')
+
+    const fromPanel =
+      pipeline === 'activas'
+      || (stage != null && STAGES.some(s => s.key === stage))
+      || cierres === '30'
+      || ganadas === 'mes'
+
+    if (fromPanel) {
+      if (ganadas === 'mes') {
+        setGanadasMesOnly(true)
+        setCierres30Only(false)
+        setFilterStage('__all__')
+      } else if (cierres === '30') {
+        setCierres30Only(true)
+        setGanadasMesOnly(false)
+        setFilterStage('__all__')
+      } else if (pipeline === 'activas') {
+        setFilterStage('__pipeline__')
+        setCierres30Only(false)
+        setGanadasMesOnly(false)
+      } else if (stage && STAGES.some(s => s.key === stage)) {
+        setFilterStage(stage)
+        setCierres30Only(false)
+        setGanadasMesOnly(false)
+      }
+    } else if (prevQsRef.current && prevQsRef.current.length > 0 && qs.length === 0) {
+      setFilterStage('__all__')
+      setCierres30Only(false)
+      setGanadasMesOnly(false)
+    }
+    prevQsRef.current = qs
+  }, [searchParams])
 
   // Ejecutar cuando los datos estén listos
   useEffect(() => {
@@ -97,7 +175,7 @@ export default function QuotesPage() {
       setSelected(null)
       setDialogOpen(true)
     }
-    if (s.highlightId && quotesReady) {
+    if (s.highlightId && quotesReady && !searchParams.get('quoteId')) {
       pendingState.current = null
       setView('table')
       setHighlightId(s.highlightId)
@@ -153,16 +231,33 @@ export default function QuotesPage() {
       stage: newStage,
       closed_at: closed && !q.closed_at ? new Date().toISOString() : (!closed ? null : q.closed_at),
     }).eq('id', id)
-    if (error) setQuotes(prev => prev.map(x => x.id === id ? { ...x, stage: q.stage } : x))
+    if (error) {
+      setQuotes(prev => prev.map(x => x.id === id ? { ...x, stage: q.stage } : x))
+    } else {
+      const { messages } = await syncQuoteInventoryForStage(id, newStage, q.stage)
+      if (messages.length) {
+        console.info('[cotización → inventario]', messages.join('\n'))
+      }
+      void queryClient.invalidateQueries({ queryKey: ['inventory-disponibles-cotizacion'] })
+      void queryClient.invalidateQueries({ queryKey: ['fabricacion-pendiente-cotizaciones'] })
+    }
   }
 
   const handleDelete = async () => {
     if (!deleteId) return
     setDeleting(true)
+    await releaseReservationsForQuote(deleteId)
     await supabase.from('quote_items').delete().eq('quote_id', deleteId)
     await supabase.from('quotes').delete().eq('id', deleteId)
-    setDeleteId(null); setDeleting(false); loadQuotes()
+    setDeleteId(null); setDeleting(false)
+    void queryClient.invalidateQueries({ queryKey: ['fabricacion-pendiente-cotizaciones'] })
+    loadQuotes()
   }
+
+  // Debe declararse antes del filtro (p. ej. ?cierres=30 usa `today`)
+  const today = new Date().toISOString().slice(0, 10)
+  const plus30Str = new Date(Date.now() + 30 * 86_400_000).toISOString().slice(0, 10)
+  const monthStartIso = new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString()
 
   const filtered = quotes.filter(q => {
     const term = search.toLowerCase()
@@ -171,21 +266,36 @@ export default function QuotesPage() {
       || (q.quote_number ?? '').toLowerCase().includes(term)
       || (q.title ?? '').toLowerCase().includes(term)
       || (q.kam?.full_name ?? '').toLowerCase().includes(term)
-    return matchSearch && (filterStage === '__all__' || q.stage === filterStage)
+
+    let matchFiltro = true
+    if (ganadasMesOnly) {
+      matchFiltro = WON_STAGES_FILTER.includes(q.stage)
+        && !!(q.closed_at && q.closed_at >= monthStartIso)
+    } else if (cierres30Only) {
+      const ec = q.expected_close?.slice(0, 10)
+      matchFiltro = !!ec && ec >= today && ec <= plus30Str && PIPELINE_STAGES.includes(q.stage)
+    } else if (filterStage === '__pipeline__') {
+      matchFiltro = PIPELINE_STAGES.includes(q.stage)
+    } else {
+      matchFiltro = filterStage === '__all__' || q.stage === filterStage
+    }
+
+    const matchUrlQuote = !urlQuoteId || q.id === urlQuoteId
+
+    return matchSearch && matchFiltro && matchUrlQuote
   })
 
   const byStage = (s: QuoteStage) => filtered.filter(q => q.stage === s)
   const stageTotal = (s: QuoteStage) => byStage(s).reduce((n, q) => n + (q.total ?? 0), 0)
-  const today = new Date().toISOString().slice(0, 10)
 
   return (
     <div className="-m-8 flex flex-col min-h-screen">
 
       {/* Header */}
-      <div className="bg-white border-b px-6 py-3 flex items-center justify-between shrink-0">
+      <div className="bg-white border-b border-gray-200 px-6 py-3 flex items-center justify-between shrink-0">
         <div className="flex items-center gap-2">
-          <h1 className="text-base font-semibold">Cotizaciones</h1>
-          <span className="text-xs bg-gray-100 text-gray-600 rounded-full px-2 py-0.5 font-medium">{quotes.length}</span>
+          <h1 className="text-2xl font-semibold text-gray-900">Cotizaciones</h1>
+          <span className="text-xs bg-gray-100 text-gray-600 rounded-full px-2.5 py-0.5 font-medium tabular-nums">{quotes.length}</span>
         </div>
         <div className="flex items-center gap-2">
           <div className="flex rounded-md border overflow-hidden">
@@ -210,14 +320,36 @@ export default function QuotesPage() {
       </div>
 
       {/* Filtros */}
-      <div className="bg-gray-50 border-b px-6 py-2 flex gap-3 items-center shrink-0">
+      <div className="bg-gray-50 border-b px-6 py-2 flex flex-wrap gap-3 items-center shrink-0">
+        {(cierres30Only || ganadasMesOnly) && (
+          <p className="text-xs text-emerald-800 bg-emerald-50 border border-emerald-100 rounded-md px-2.5 py-1 w-full sm:w-auto">
+            {cierres30Only && 'Filtro del panel: cierre estimado en los próximos 30 días (pipeline activo).'}
+            {ganadasMesOnly && 'Filtro del panel: aceptadas y órdenes de venta con cierre registrado este mes.'}
+          </p>
+        )}
         <Input placeholder="Buscar empresa, título, número, KAM..."
           value={search} onChange={e => setSearch(e.target.value)}
           className="max-w-xs h-8 text-sm" />
-        <Select value={filterStage} onValueChange={setFilterStage}>
-          <SelectTrigger className="w-48 h-8 text-sm"><SelectValue /></SelectTrigger>
+        <Select
+          value={filterStage}
+          onValueChange={v => {
+            setFilterStage(v)
+            setCierres30Only(false)
+            setGanadasMesOnly(false)
+            setSearchParams(prev => {
+              const next = new URLSearchParams(prev)
+              next.delete('pipeline')
+              next.delete('stage')
+              next.delete('cierres')
+              next.delete('ganadas')
+              return next
+            }, { replace: true })
+          }}
+        >
+          <SelectTrigger className="w-[220px] h-8 text-sm"><SelectValue /></SelectTrigger>
           <SelectContent>
             <SelectItem value="__all__">Todos los estados</SelectItem>
+            <SelectItem value="__pipeline__">Solo pipeline (borrador + negociación + enviada)</SelectItem>
             {STAGES.map(s => <SelectItem key={s.key} value={s.key}>{s.label}</SelectItem>)}
           </SelectContent>
         </Select>
@@ -260,10 +392,17 @@ export default function QuotesPage() {
                     </div>
                   )}
                   {cards.map(q => (
-                    <KanbanCard key={q.id} quote={q} today={today}
+                    <KanbanCard
+                      key={q.id}
+                      quote={q}
+                      today={today}
+                      highlighted={highlightId === q.id}
                       draggable={canEdit(q.kam?.id ?? '')}
                       onDragStart={e => handleDragStart(e, q)}
-                      onClick={() => { setSelected(q); setDialogOpen(true) }}
+                      onClick={() => {
+                        setSelected(q)
+                        setDialogOpen(true)
+                      }}
                     />
                   ))}
                 </div>
@@ -280,14 +419,14 @@ export default function QuotesPage() {
             <Table>
               <TableHeader>
                 <TableRow className="bg-gray-50 hover:bg-gray-50">
-                  <TableHead className="font-semibold">N°</TableHead>
-                  <TableHead className="font-semibold">Título / Negocio</TableHead>
-                  <TableHead className="font-semibold">Empresa</TableHead>
-                  <TableHead className="font-semibold">KAM</TableHead>
-                  <TableHead className="font-semibold">Estado</TableHead>
-                  <TableHead className="font-semibold text-right">Total</TableHead>
-                  <TableHead className="font-semibold">Cierre est.</TableHead>
-                  <TableHead className="font-semibold">Creado</TableHead>
+                  <TableHead className="text-xs font-semibold text-gray-700">N°</TableHead>
+                  <TableHead className="text-xs font-semibold text-gray-700">Título / Negocio</TableHead>
+                  <TableHead className="text-xs font-semibold text-gray-700">Empresa</TableHead>
+                  <TableHead className="text-xs font-semibold text-gray-700">KAM</TableHead>
+                  <TableHead className="text-xs font-semibold text-gray-700">Estado</TableHead>
+                  <TableHead className="text-xs font-semibold text-gray-700 text-right">Total</TableHead>
+                  <TableHead className="text-xs font-semibold text-gray-700">Cierre est.</TableHead>
+                  <TableHead className="text-xs font-semibold text-gray-700">Creado</TableHead>
                   <TableHead />
                 </TableRow>
               </TableHeader>
@@ -302,11 +441,23 @@ export default function QuotesPage() {
                     <TableRow key={q.id} id={`quote-row-${q.id}`}
                       className={highlightId === q.id ? 'bg-blue-50' : 'hover:bg-gray-50'}>
                       <TableCell className="font-mono text-xs text-gray-400">{q.quote_number}</TableCell>
-                      <TableCell className="font-medium text-gray-900 max-w-[200px] truncate">
+                      <TableCell className="text-sm text-gray-800 max-w-[200px] truncate">
                         {q.title || '—'}
                         {expired && <span className="ml-2 text-[10px] text-red-400 font-normal">Vencida</span>}
                       </TableCell>
-                      <TableCell className="text-sm text-gray-600">{q.company?.name ?? '—'}</TableCell>
+                      <TableCell className="text-sm text-gray-700">
+                        {q.company?.id ? (
+                          <Link
+                            to={`/companies/${q.company.id}/v2?cfTab=quotes`}
+                            className="text-violet-700 hover:text-violet-900 hover:underline font-medium"
+                            onClick={e => e.stopPropagation()}
+                          >
+                            {q.company.name}
+                          </Link>
+                        ) : (
+                          <span className="text-gray-500">—</span>
+                        )}
+                      </TableCell>
                       <TableCell className="text-sm text-gray-600">{q.kam?.full_name ?? '—'}</TableCell>
                       <TableCell>
                         <span className={cn('inline-flex px-2 py-0.5 rounded-full text-xs font-medium', st?.color, st?.bg.split(' ')[0])}>
@@ -376,24 +527,47 @@ export default function QuotesPage() {
   )
 }
 
-function KanbanCard({ quote, onClick, draggable, onDragStart, today }: {
-  quote: QuoteRow; onClick: () => void; draggable: boolean
-  onDragStart: (e: React.DragEvent) => void; today: string
+function KanbanCard({
+  quote,
+  onClick,
+  draggable,
+  onDragStart,
+  today,
+  highlighted,
+}: {
+  quote: QuoteRow
+  onClick: () => void
+  draggable: boolean
+  onDragStart: (e: React.DragEvent) => void
+  today: string
+  highlighted?: boolean
 }) {
   const expired = quote.valid_until && quote.valid_until < today
     && !['aceptada','orden_de_venta','rechazada'].includes(quote.stage)
   return (
     <div
+      id={`kanban-card-${quote.id}`}
       draggable={draggable} onDragStart={onDragStart} onClick={onClick}
       className={cn(
         'bg-white rounded border border-gray-200 p-2 shadow-sm select-none cursor-pointer',
         'hover:border-gray-300 hover:shadow transition-shadow',
         draggable && 'cursor-grab active:cursor-grabbing',
-        expired && 'border-l-2 border-l-red-400'
+        expired && 'border-l-2 border-l-red-400',
+        highlighted && 'ring-2 ring-violet-500 ring-offset-1',
       )}
     >
       <p className="text-xs font-semibold text-gray-900 leading-tight line-clamp-2">{quote.title || quote.quote_number}</p>
-      {quote.company?.name && <p className="text-[10px] text-gray-400 mt-0.5 truncate">{quote.company.name}</p>}
+      {quote.company?.name && quote.company?.id ? (
+        <Link
+          to={`/companies/${quote.company.id}/v2?cfTab=quotes`}
+          className="text-xs text-violet-700 hover:underline mt-0.5 truncate block font-medium"
+          onClick={e => e.stopPropagation()}
+        >
+          {quote.company.name}
+        </Link>
+      ) : quote.company?.name ? (
+        <p className="text-xs text-gray-500 mt-0.5 truncate">{quote.company.name}</p>
+      ) : null}
       {(quote.total ?? 0) > 0 && (
         <div className="flex items-center gap-1 mt-1.5 text-[11px] text-gray-600">
           <DollarSign size={10} className="text-gray-400" />

@@ -3,9 +3,10 @@ import { supabase } from '@/lib/supabase'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Badge } from '@/components/ui/badge'
-import { Plus, Search, Package, Wrench, Pencil, Archive, Trash2 } from 'lucide-react'
+import { Plus, Search, Package, Wrench, Pencil, Archive, Trash2, FileSpreadsheet } from 'lucide-react'
 import type { Product } from '@/types'
 import ProductDialog from './ProductDialog'
+import ProductExcelImportDialog from './ProductExcelImportDialog'
 
 function formatPrice(price: number, currency: string) {
   if (currency === 'CLP') return `$${price.toLocaleString('es-CL')}`
@@ -15,11 +16,13 @@ function formatPrice(price: number, currency: string) {
 
 export default function ProductsPage() {
   const [products, setProducts]         = useState<Product[]>([])
+  const [stockByProduct, setStockByProduct] = useState<Record<string, { total: number; disponibles: number }>>({})
   const [loading, setLoading]           = useState(true)
   const [search, setSearch]             = useState('')
   const [typeFilter, setTypeFilter]     = useState<string>('all')
   const [statusFilter, setStatusFilter] = useState<string>('active')
   const [dialogOpen, setDialogOpen]     = useState(false)
+  const [importOpen, setImportOpen]      = useState(false)
   const [selected, setSelected]         = useState<Product | null>(null)
 
   async function load() {
@@ -28,10 +31,34 @@ export default function ProductsPage() {
       let q = supabase.from('products').select('*').order('name')
       if (statusFilter === 'active')   q = q.eq('is_active', true)
       if (statusFilter === 'inactive') q = q.eq('is_active', false)
-      if (typeFilter !== 'all')        q = q.eq('type', typeFilter)
+      if (typeFilter === 'product')     q = q.in('type', ['product', 'inventory'])
+      else if (typeFilter !== 'all')   q = q.eq('type', typeFilter)
       const { data, error } = await q
       if (error) throw error
-      setProducts(data ?? [])
+      const list = (data ?? []) as Product[]
+      setProducts(list)
+
+      const stockIds = list
+        .filter(p => (p.type === 'product' || p.type === 'inventory') && (p.has_inventory ?? false))
+        .map(p => p.id)
+      if (stockIds.length === 0) {
+        setStockByProduct({})
+      } else {
+        const { data: invRows, error: invErr } = await supabase
+          .from('inventory_items')
+          .select('product_id, status')
+          .in('product_id', stockIds)
+        if (invErr) throw invErr
+        const map: Record<string, { total: number; disponibles: number }> = {}
+        for (const id of stockIds) map[id] = { total: 0, disponibles: 0 }
+        for (const r of invRows ?? []) {
+          const pid = (r as { product_id: string }).product_id
+          if (!map[pid]) map[pid] = { total: 0, disponibles: 0 }
+          map[pid].total++
+          if ((r as { status: string }).status === 'disponible') map[pid].disponibles++
+        }
+        setStockByProduct(map)
+      }
     } catch (err) {
       console.error('Error cargando productos:', err)
     } finally {
@@ -56,7 +83,7 @@ export default function ProductsPage() {
   }
 
   async function deleteProduct(p: Product) {
-    const message = p.has_inventory
+    const message = (p.has_inventory ?? false)
       ? `¿Eliminar "${p.name}"?\n\nEsto eliminará también todos sus seriales e historial de precios.\nEsta acción no se puede deshacer.`
       : `¿Eliminar "${p.name}"?\n\nSe eliminará también su historial de precios.\nEsta acción no se puede deshacer.`
 
@@ -78,9 +105,14 @@ export default function ProductsPage() {
           <h1 className="text-xl font-semibold text-gray-900">Productos</h1>
           <p className="text-sm text-gray-500">{filtered.length} productos</p>
         </div>
-        <Button onClick={openCreate} size="sm" className="gap-1.5">
-          <Plus size={15} /> Nuevo producto
-        </Button>
+        <div className="flex flex-wrap gap-2 justify-end">
+          <Button variant="outline" onClick={() => setImportOpen(true)} size="sm" className="gap-1.5">
+            <FileSpreadsheet size={15} /> Importar Excel
+          </Button>
+          <Button onClick={openCreate} size="sm" className="gap-1.5">
+            <Plus size={15} /> Nuevo producto
+          </Button>
+        </div>
       </div>
 
       <div className="flex flex-wrap gap-2">
@@ -127,6 +159,7 @@ export default function ProductsPage() {
               <th className="px-4 py-3 text-left">SKU</th>
               <th className="px-4 py-3 text-left">Tipo</th>
               <th className="px-4 py-3 text-left">Categoría</th>
+              <th className="px-4 py-3 text-right">Stock</th>
               <th className="px-4 py-3 text-right">Precio</th>
               <th className="px-4 py-3 text-center">Estado</th>
               <th className="px-4 py-3 text-right">Acciones</th>
@@ -134,18 +167,22 @@ export default function ProductsPage() {
           </thead>
           <tbody className="divide-y divide-gray-100">
             {loading ? (
-              <tr><td colSpan={7} className="px-4 py-8 text-center text-gray-400">Cargando...</td></tr>
+              <tr><td colSpan={8} className="px-4 py-8 text-center text-gray-400">Cargando...</td></tr>
             ) : filtered.length === 0 ? (
-              <tr><td colSpan={7} className="px-4 py-8 text-center text-gray-400">Sin resultados</td></tr>
+              <tr><td colSpan={8} className="px-4 py-8 text-center text-gray-400">Sin resultados</td></tr>
             ) : filtered.map(p => (
-              <tr key={p.id} className="hover:bg-gray-50 transition-colors">
+              <tr
+                key={p.id}
+                className="hover:bg-gray-50 transition-colors cursor-pointer"
+                onClick={() => openEdit(p)}
+              >
                 <td className="px-4 py-3 font-medium text-gray-900">{p.name}</td>
                 <td className="px-4 py-3 text-gray-500">{p.sku ?? '—'}</td>
                 <td className="px-4 py-3">
-                  {p.type === 'product' ? (
+                  {p.type === 'product' || p.type === 'inventory' ? (
                     <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-700">
                       <Package size={11} />
-                      {p.has_inventory ? 'Producto · Stock' : 'Producto · Sin stock'}
+                      {(p.has_inventory ?? false) ? 'Producto · Stock' : 'Producto · Sin stock'}
                     </span>
                   ) : (
                     <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-700">
@@ -155,13 +192,23 @@ export default function ProductsPage() {
                   )}
                 </td>
                 <td className="px-4 py-3 text-gray-500">{p.service_category ?? '—'}</td>
+                <td className="px-4 py-3 text-right tabular-nums text-gray-700">
+                  {(p.type === 'product' || p.type === 'inventory') && (p.has_inventory ?? false) ? (
+                    <span title="Total (disponibles)">
+                      {stockByProduct[p.id]?.total ?? 0}
+                      <span className="text-gray-500 font-normal"> ({stockByProduct[p.id]?.disponibles ?? 0})</span>
+                    </span>
+                  ) : (
+                    <span className="text-gray-300">—</span>
+                  )}
+                </td>
                 <td className="px-4 py-3 text-right font-medium">{formatPrice(p.price, p.currency)}</td>
                 <td className="px-4 py-3 text-center">
                   <Badge variant={p.is_active ? 'default' : 'secondary'}>
                     {p.is_active ? 'Activo' : 'Inactivo'}
                   </Badge>
                 </td>
-                <td className="px-4 py-3 text-right">
+                <td className="px-4 py-3 text-right" onClick={e => e.stopPropagation()}>
                   <div className="flex justify-end gap-1">
                     <Button size="sm" variant="ghost" className="h-7 w-7 p-0" onClick={() => openEdit(p)}>
                       <Pencil size={13} />
@@ -186,6 +233,8 @@ export default function ProductsPage() {
         onClose={() => setDialogOpen(false)}
         onSaved={load}
       />
+
+      <ProductExcelImportDialog open={importOpen} onOpenChange={setImportOpen} onImported={load} />
     </div>
   )
 }

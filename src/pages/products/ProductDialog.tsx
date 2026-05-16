@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { supabase } from '@/lib/supabase'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
@@ -21,7 +21,7 @@ const EMPTY: Omit<Product, 'id' | 'created_at' | 'updated_at'> = {
   name:             '',
   sku:              '',
   description:      '',
-  type:             '' as ProductType,
+  type:             'product',
   has_inventory:    false,
   service_category: '',
   price:            0,
@@ -34,18 +34,16 @@ function formatDate(iso: string) {
   return new Date(iso).toLocaleDateString('es-CL', { day: '2-digit', month: 'short', year: 'numeric' })
 }
 
-interface PriceHistoryRow extends ProductPriceHistory {
-  new_currency?: string
-}
-
 export default function ProductDialog({ open, product, onClose, onSaved }: Props) {
   const [form, setForm]               = useState(EMPTY)
   const [saving, setSaving]           = useState(false)
-  const [history, setHistory]         = useState<PriceHistoryRow[]>([])
+  const [history, setHistory]         = useState<ProductPriceHistory[]>([])
   const [showHistory, setShowHistory] = useState(false)
   const [newSerial, setNewSerial]             = useState('')
   const [newSerialNote, setNewSerialNote]     = useState('')
   const [pendingSerials, setPendingSerials]   = useState<{ serial: string; notes: string }[]>([])
+  /** Totales de inventario para productos con stock propio */
+  const [stockCounts, setStockCounts]         = useState<{ total: number; disponibles: number } | null>(null)
 
   useEffect(() => {
     if (product) {
@@ -53,8 +51,9 @@ export default function ProductDialog({ open, product, onClose, onSaved }: Props
         name:             product.name,
         sku:              product.sku ?? '',
         description:      product.description ?? '',
-        type:             product.type,
-        has_inventory:    product.has_inventory,
+        // En UI "Producto" agrupa filas legacy `inventory`
+        type:             product.type === 'inventory' ? 'product' : product.type,
+        has_inventory:    product.has_inventory ?? false,
         service_category: product.service_category ?? '',
         price:            product.price,
         currency:         product.currency,
@@ -70,7 +69,36 @@ export default function ProductDialog({ open, product, onClose, onSaved }: Props
     setShowHistory(false)
     setNewSerial('')
     setNewSerialNote('')
+    setStockCounts(null)
   }, [product, open])
+
+  const loadStockCounts = useCallback(async (productId: string) => {
+    const { data, error } = await supabase
+      .from('inventory_items')
+      .select('status')
+      .eq('product_id', productId)
+    if (error) {
+      console.error(error)
+      setStockCounts(null)
+      return
+    }
+    const rows = data ?? []
+    setStockCounts({
+      total: rows.length,
+      disponibles: rows.filter(r => r.status === 'disponible').length,
+    })
+  }, [])
+
+  /** Totales de seriales para producto físico con stock propio (o si el usuario activa stock en el formulario) */
+  useEffect(() => {
+    if (!open || !product?.id) return
+    const isPhysical = product.type === 'product' || product.type === 'inventory'
+    if (!isPhysical || form.type !== 'product' || !form.has_inventory) {
+      setStockCounts(null)
+      return
+    }
+    void loadStockCounts(product.id)
+  }, [open, product?.id, product?.type, form.type, form.has_inventory, loadStockCounts])
 
   async function loadHistory(id: string) {
     const { data } = await supabase
@@ -91,7 +119,7 @@ export default function ProductDialog({ open, product, onClose, onSaved }: Props
       ...f,
       type:             v,
       has_inventory:    v === 'service' ? false : f.has_inventory,
-      service_category: v === 'product' ? '' : f.service_category,
+      service_category: v === 'service' ? f.service_category : '',
     }))
     if (v !== 'product') setPendingSerials([])
   }
@@ -108,7 +136,7 @@ export default function ProductDialog({ open, product, onClose, onSaved }: Props
   }
 
   async function save() {
-    if (!form.name.trim() || !form.type) return
+    if (!form.name.trim()) return
     setSaving(true)
 
     try {
@@ -145,6 +173,7 @@ export default function ProductDialog({ open, product, onClose, onSaved }: Props
               product_id:    data.id,
               serial_number: s.serial,
               status:        'disponible',
+              custody:       'bodega',
               notes:         s.notes || null,
             }))
           )
@@ -163,13 +192,20 @@ export default function ProductDialog({ open, product, onClose, onSaved }: Props
   }
 
   const isProduct     = form.type === 'product'
-  const showInventory = product && isProduct && form.has_inventory
+  const showInventory = Boolean(product && isProduct && form.has_inventory)
 
   return (
     <Dialog open={open} onOpenChange={v => !v && onClose()}>
       <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>{product ? 'Editar producto' : 'Nuevo producto'}</DialogTitle>
+          {product && stockCounts !== null && form.type === 'product' && form.has_inventory && (
+            <p className="text-sm text-gray-600 pt-1">
+              Stock total:{' '}
+              <span className="font-semibold text-gray-900 tabular-nums">{stockCounts.total}</span>
+              <span className="text-gray-500"> ({stockCounts.disponibles} disponibles)</span>
+            </p>
+          )}
         </DialogHeader>
 
         <div className="space-y-4 pt-2">
@@ -237,7 +273,7 @@ export default function ProductDialog({ open, product, onClose, onSaved }: Props
               <div className="space-y-1.5">
                 <Label>Categoría de servicio</Label>
                 <Input
-                  value={form.service_category}
+                  value={form.service_category ?? ''}
                   onChange={e => set('service_category', e.target.value)}
                   placeholder="Ej: Consultoría, Instalación, Soporte..."
                 />
@@ -372,12 +408,14 @@ export default function ProductDialog({ open, product, onClose, onSaved }: Props
           )}
 
           {/* Panel inventario en edición */}
-          {showInventory && <InventoryPanel productId={product.id} />}
+          {showInventory && product ? (
+            <InventoryPanel productId={product.id} onItemsChanged={() => void loadStockCounts(product.id)} />
+          ) : null}
         </div>
 
         <div className="flex justify-end gap-2 pt-4 border-t">
           <Button variant="outline" onClick={onClose}>Cancelar</Button>
-          <Button onClick={save} disabled={saving || !form.name.trim() || !form.type}>
+          <Button onClick={save} disabled={saving || !form.name.trim()}>
             {saving ? 'Guardando...' : product ? 'Guardar cambios' : 'Crear producto'}
           </Button>
         </div>

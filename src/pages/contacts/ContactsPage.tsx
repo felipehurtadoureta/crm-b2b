@@ -1,13 +1,39 @@
 import { useEffect, useState, useCallback } from 'react'
 import { supabase } from '@/lib/supabase'
+import { kamAbbrOrInitials } from '@/lib/kamDisplay'
 import type { Contact, Company } from '@/types'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Plus, Search, Users, Star } from 'lucide-react'
 import ContactDialog from './ContactDialog'
 
+type NestedKam = { full_name: string; display_abbr?: string | null }
+type NestedCompanyKam = { is_lead?: boolean; kam?: NestedKam | NestedKam[] | null }
+
 interface ContactWithCompany extends Contact {
-  company: { name: string }
+  company: {
+    name: string
+    company_kams?: NestedCompanyKam | NestedCompanyKam[] | null
+  }
+}
+
+function parseNestedKam(k: unknown): NestedKam | null {
+  if (k == null) return null
+  const o = Array.isArray(k) ? k[0] : k
+  if (!o || typeof o !== 'object' || !('full_name' in o)) return null
+  const p = o as NestedKam
+  return p.full_name ? p : null
+}
+
+/** KAM principal de la empresa del contacto (misma lógica que en la lista de empresas). */
+function companyLeadKamCell(company: ContactWithCompany['company'] | undefined): { label: string; title: string } {
+  if (!company?.company_kams) return { label: '—', title: '' }
+  const raw = company.company_kams
+  const list: NestedCompanyKam[] = Array.isArray(raw) ? raw : [raw]
+  const pick = list.find(l => l.is_lead) ?? list[0]
+  const kam = pick ? parseNestedKam(pick.kam) : null
+  if (!kam) return { label: '—', title: '' }
+  return { label: kamAbbrOrInitials(kam), title: kam.full_name }
 }
 
 export default function ContactsPage() {
@@ -23,7 +49,12 @@ export default function ContactsPage() {
     setLoading(true)
     const { data } = await supabase
       .from('contacts')
-      .select(`*, company:companies!contacts_company_id_fkey(name)`)
+      .select(
+        `*, company:companies!contacts_company_id_fkey(
+          name,
+          company_kams(is_lead, kam:profiles(full_name, display_abbr))
+        )`,
+      )
       .order('first_name')
     setContacts(data ?? [])
     setLoading(false)
@@ -50,7 +81,7 @@ export default function ContactsPage() {
     const matchSearch =
       `${c.first_name} ${c.last_name}`.toLowerCase().includes(search.toLowerCase()) ||
       c.email?.toLowerCase().includes(search.toLowerCase()) ||
-      c.company?.name.toLowerCase().includes(search.toLowerCase())
+      (c.company?.name ?? '').toLowerCase().includes(search.toLowerCase())
 
     const matchActive =
       filterActive === 'todos' ? true :
@@ -110,6 +141,7 @@ export default function ContactsPage() {
             <tr>
               <th className="text-left px-4 py-3 font-medium text-gray-600">Nombre</th>
               <th className="text-left px-4 py-3 font-medium text-gray-600">Empresa</th>
+              <th className="text-left px-4 py-3 font-medium text-gray-600">KAM empresa</th>
               <th className="text-left px-4 py-3 font-medium text-gray-600">Cargo</th>
               <th className="text-left px-4 py-3 font-medium text-gray-600">Email</th>
               <th className="text-left px-4 py-3 font-medium text-gray-600">Teléfono</th>
@@ -119,15 +151,17 @@ export default function ContactsPage() {
           </thead>
           <tbody>
             {loading ? (
-              <tr><td colSpan={7} className="text-center py-12 text-gray-400">Cargando...</td></tr>
+              <tr><td colSpan={8} className="text-center py-12 text-gray-400">Cargando...</td></tr>
             ) : filtered.length === 0 ? (
               <tr>
-                <td colSpan={7} className="py-16 text-center">
+                <td colSpan={8} className="py-16 text-center">
                   <Users size={32} className="mx-auto text-gray-300 mb-2" />
                   <p className="text-gray-400">No hay contactos</p>
                 </td>
               </tr>
-            ) : filtered.map(contact => (
+            ) : filtered.map(contact => {
+              const kamEmp = companyLeadKamCell(contact.company)
+              return (
               <tr key={contact.id} className="border-b last:border-0 hover:bg-gray-50 transition-colors">
                 <td className="px-4 py-3">
                   <div className="flex items-center gap-2">
@@ -140,6 +174,9 @@ export default function ContactsPage() {
                   </div>
                 </td>
                 <td className="px-4 py-3 text-gray-600">{contact.company?.name ?? '—'}</td>
+                <td className="px-4 py-3 text-gray-700 font-medium" title={kamEmp.title || undefined}>
+                  {kamEmp.label}
+                </td>
                 <td className="px-4 py-3 text-gray-600">{contact.position ?? '—'}</td>
                 <td className="px-4 py-3 text-gray-600">{contact.email ?? '—'}</td>
                 <td className="px-4 py-3 text-gray-600">{contact.phone ?? '—'}</td>
@@ -158,7 +195,8 @@ export default function ContactsPage() {
                   </Button>
                 </td>
               </tr>
-            ))}
+              )
+            })}
           </tbody>
         </table>
       </div>

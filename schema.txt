@@ -79,6 +79,10 @@
 | inventory_items.serial_number text NOT NULL                        |
 | inventory_items.status text NOT NULL                               |
 | inventory_items.notes text                                         |
+| inventory_items.custody text NOT NULL default bodega               |
+| inventory_items.reference_price numeric                              |
+| inventory_items.reference_currency text                            |
+| inventory_items.custody_company_id uuid                            |
 | inventory_items.created_at timestamp with time zone NOT NULL       |
 | inventory_items.updated_at timestamp with time zone NOT NULL       |
 | product_price_history.id uuid NOT NULL                             |
@@ -93,10 +97,20 @@
 | products.sku text                                                  |
 | products.description text                                          |
 | products.type text NOT NULL                                        |
+| products.has_inventory boolean NOT NULL default false              |
+| products.service_category text                                     |
 | products.price numeric NOT NULL                                    |
 | products.currency text NOT NULL                                    |
 | products.tax_rate numeric NOT NULL                                 |
 | products.is_active boolean NOT NULL                                |
 | products.created_at timestamp with time zone NOT NULL              |
 | products.updated_at timestamp with time zone NOT NULL              |
+| quote_items.line_kind text NOT NULL default stock                  |
+| quote_items.pricing_model text NOT NULL default sale                |
+| quote_items.procurement_plan text                                  |
+| quote_items.inventory_item_id uuid                                 |
+| quote_item_serial_assignments.id uuid NOT NULL                     |
+| quote_item_serial_assignments.quote_item_id uuid NOT NULL          |
+| quote_item_serial_assignments.inventory_item_id uuid NOT NULL      |
+| quote_item_serial_assignments.created_at timestamptz NOT NULL      |
 | profiles.id uuid NOT NULL                                          |

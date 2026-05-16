@@ -1,7 +1,18 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { Link } from 'react-router-dom'
 import { supabase } from '@/lib/supabase'
 import { useAuth } from '@/hooks/useAuth'
-import type { Company, Contact, Profile, Product, Quote, QuoteStage } from '@/types'
+import type {
+  Company,
+  Contact,
+  Profile,
+  Product,
+  Quote,
+  QuoteLineKind,
+  QuotePricingModel,
+  QuoteStage,
+} from '@/types'
 import { Button }    from '@/components/ui/button'
 import { Input }     from '@/components/ui/input'
 import { Label }     from '@/components/ui/label'
@@ -10,24 +21,35 @@ import { Separator } from '@/components/ui/separator'
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select'
-import { Plus, Trash2, RefreshCw, PackageSearch, Phone, MessageCircle, Mail, Users, MapPin, PlusCircle, Printer } from 'lucide-react'
-import CallDialog from '@/pages/calls/CallDialog'
+import { Plus, Trash2, RefreshCw, PackageSearch, Printer } from 'lucide-react'
 import QuotePrintView from './QuotePrintView'
+import QuoteLinkedDocumentsBlock from '@/components/quotes/QuoteLinkedDocumentsBlock'
+import QuoteAmountInput from '@/components/quotes/QuoteAmountInput'
+import {
+  QUOTE_RESERVE_INVENTORY_STAGES,
+  applyReservationsForQuote,
+  releaseReservationsForQuote,
+} from '@/lib/quoteInventoryReservation'
+import { productTracksSerialStock } from '@/lib/productInventoryRules'
 
 /* ─── tipos ─────────────────────────────────────────────────────── */
 type Currency     = 'CLP' | 'USD' | 'UF'
 type DiscountType = 'none' | 'percent' | 'fixed'
 
 interface LineItem {
-  tempId: string; id?: string; is_free: boolean
-  product_id: string; product_name: string; product_currency: string
-  original_price: number; unit_price: number; quantity: number; subtotal: number
-}
-
-interface CallRow {
-  id: string; called_at: string; type: string; outcome: string; notes?: string
-  contact?: { first_name: string; last_name: string } | null
-  kam?: { full_name: string } | null
+  tempId: string
+  id?: string
+  is_free: boolean
+  product_id: string
+  product_name: string
+  product_currency: string
+  original_price: number
+  unit_price: number
+  quantity: number
+  subtotal: number
+  line_kind: QuoteLineKind
+  pricing_model: QuotePricingModel
+  inventory_item_id: string | null
 }
 
 interface Props {
@@ -57,29 +79,36 @@ const STAGES: { value: QuoteStage; label: string }[] = [
   { value: 'rechazada',      label: 'Rechazada' },
 ]
 
-const TYPE_ICON: Record<string, React.ReactNode> = {
-  llamada:  <Phone size={13} className="text-blue-500" />,
-  whatsapp: <MessageCircle size={13} className="text-green-500" />,
-  email:    <Mail size={13} className="text-orange-500" />,
-  reunion:  <Users size={13} className="text-purple-500" />,
-  visita:   <MapPin size={13} className="text-red-500" />,
-}
-const TYPE_LABEL: Record<string, string> = {
-  llamada: 'Llamada', whatsapp: 'WhatsApp', email: 'Email', reunion: 'Reunión', visita: 'Visita',
-}
-const OUTCOME_LABEL: Record<string, string> = {
-  sin_resultado: 'Sin resultado', interesado: 'Interesado', no_interesado: 'No interesado',
-  requiere_seguimiento: 'Requiere seguimiento', cotizacion_solicitada: 'Cotiz. solicitada', venta_cerrada: 'Venta cerrada',
-}
-const OUTCOME_COLOR: Record<string, string> = {
-  sin_resultado: 'text-gray-400', interesado: 'text-green-600', no_interesado: 'text-red-500',
-  requiere_seguimiento: 'text-yellow-600', cotizacion_solicitada: 'text-blue-600', venta_cerrada: 'text-purple-600',
+const TAX_RATE = 0.19
+
+const LINE_KIND_LABEL: Record<QuoteLineKind, string> = {
+  stock: 'Stock propio',
+  procure: 'Comprar / fabricar',
+  service: 'Servicio',
+  custom: 'Ítem libre',
 }
 
-const TAX_RATE = 0.19
+const PRICING_MODEL_LABEL: Record<QuotePricingModel, string> = {
+  sale: 'Venta',
+  monthly_rental: 'Arriendo mensual',
+}
+
+/** Línea física desde catálogo: stock si lleva series; si no, abastecimiento externo. */
+function defaultLineKindForCatalogProduct(p: Product): QuoteLineKind {
+  if (p.type === 'service') return 'service'
+  return productTracksSerialStock(p) ? 'stock' : 'procure'
+}
 const SYMBOL: Record<Currency, string> = { CLP: '$', USD: 'US$', UF: 'UF' }
 const mkTempId = () => Math.random().toString(36).slice(2)
 const today    = () => new Date().toISOString().slice(0, 10)
+
+/** Mismas acciones compactas que la ficha empresa v2 */
+const QUOTE_DIALOG_NAV_BTN =
+  'inline-flex items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-3 py-1.5 text-xs font-medium text-gray-800 hover:bg-gray-50 transition-colors shrink-0'
+
+function scrollQuoteModalSection(elementId: string) {
+  document.getElementById(elementId)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+}
 
 const EMPTY = (kamId: string): FormState => ({
   title: '', company_id: '', contact_id: '', kam_id: kamId,
@@ -95,8 +124,6 @@ const fmtNum = (n: number, cur: string) => {
   return new Intl.NumberFormat('es-CL', { minimumFractionDigits: 2, maximumFractionDigits: 4 }).format(n)
 }
 const fmtCLP  = (n: number) => new Intl.NumberFormat('es-CL').format(Math.round(n))
-const fmtDate = (d: string) => new Date(d.length === 10 ? d + 'T00:00:00' : d)
-  .toLocaleDateString('es-CL', { day: '2-digit', month: 'short', year: 'numeric' })
 const round = (n: number, cur: Currency) =>
   cur === 'CLP' ? Math.round(n) : cur === 'UF' ? parseFloat(n.toFixed(4)) : parseFloat(n.toFixed(2))
 
@@ -112,22 +139,110 @@ const symOf = (cur: string) => cur === 'CLP' ? '$' : cur === 'USD' ? 'US$' : cur
 export default function QuoteDialog({ open, onClose, quote, companies, contacts, kams, products,
   initialCompanyId, initialContactId, initialCallId, onSaved }: Props) {
   const { profile } = useAuth()
+  const queryClient = useQueryClient()
   const [form, setForm]         = useState<FormState>(EMPTY(''))
   const [items, setItems]       = useState<LineItem[]>([])
-  const [calls, setCalls]       = useState<CallRow[]>([])
   const [loading, setLoading]   = useState(false)
   const [error, setError]       = useState<string | null>(null)
-  const [callDialogOpen, setCallDialogOpen] = useState(false)
   const [showPrint, setShowPrint]           = useState(false)
+  /** Mensajes tras guardar cuando la etapa aplica reserva automática */
+  const [inventoryReserveNote, setInventoryReserveNote] = useState<string[]>([])
 
   const readonly = profile?.role === 'reader' ||
     (profile?.role === 'kam' && !!quote && quote.kam_id !== profile.id)
 
+  const scrollToDocumentos = useCallback(() => scrollQuoteModalSection('quote-dialog-documentos'), [])
+
   const filteredContacts = contacts.filter(c => c.company_id === form.company_id)
+
   const cur     = form.currency
   const sym     = SYMBOL[cur]
   const usdRate = parseFloat(form.usd_clp_rate) || 0
   const ufRate  = parseFloat(form.uf_clp_rate)  || 0
+
+  /** Productos con serie para los que esta cotización pide líneas "stock". */
+  const stockTrackedProductIds = useMemo(() => {
+    const ids = new Set<string>()
+    for (const i of items) {
+      if (i.is_free || i.line_kind !== 'stock') continue
+      const p = products.find(x => x.id === i.product_id)
+      if (!p || p.type === 'service') continue
+      if (!productTracksSerialStock(p)) continue
+      ids.add(i.product_id)
+    }
+    return Array.from(ids)
+  }, [items, products])
+
+  const { data: disponiblesPorProducto = {} } = useQuery({
+    queryKey: ['inventory-disponibles-cotizacion', [...stockTrackedProductIds].sort().join(',')],
+    enabled: open && stockTrackedProductIds.length > 0,
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from('inventory_items')
+        .select('product_id')
+        .in('product_id', stockTrackedProductIds)
+        .eq('status', 'disponible')
+      if (error) throw error
+      const map: Record<string, number> = {}
+      for (const pid of stockTrackedProductIds) map[pid] = 0
+      for (const row of data ?? []) {
+        const pid = (row as { product_id: string }).product_id
+        map[pid] = (map[pid] ?? 0) + 1
+      }
+      return map
+    },
+  })
+
+  const requestedStockPorProducto = useMemo(() => {
+    const map: Record<string, number> = {}
+    for (const i of items) {
+      if (i.is_free || i.line_kind !== 'stock') continue
+      const p = products.find(x => x.id === i.product_id)
+      if (!p || p.type === 'service') continue
+      if (!productTracksSerialStock(p)) continue
+      map[i.product_id] = (map[i.product_id] ?? 0) + i.quantity
+    }
+    return map
+  }, [items, products])
+
+  /** Por orden de línea: unidades desde bodega vs a fabricar (reparto por producto al estilo FIFO, coherente con la reserva). */
+  const stockPorLineaBodegaFabricar = useMemo(() => {
+    const pool: Record<string, number> = {}
+    for (const pid of stockTrackedProductIds) {
+      pool[pid] = disponiblesPorProducto[pid] ?? 0
+    }
+    const map: Record<string, { desdeBodega: number; fabricar: number }> = {}
+    for (const i of items) {
+      if (i.is_free || i.line_kind !== 'stock') continue
+      const p = products.find(x => x.id === i.product_id)
+      if (!p || p.type === 'service' || !productTracksSerialStock(p)) continue
+      const qty = Math.max(0, Math.floor(Number(i.quantity) || 0))
+      const restante = Math.max(0, pool[i.product_id] ?? 0)
+      const desdeBodega = Math.min(qty, restante)
+      const fabricar = qty - desdeBodega
+      pool[i.product_id] = restante - desdeBodega
+      map[i.tempId] = { desdeBodega, fabricar }
+    }
+    return map
+  }, [items, products, disponiblesPorProducto, stockTrackedProductIds])
+
+  const advertenciasStock = useMemo(() => {
+    /** En aceptada / orden de venta el stock ya reservado deja `disponible` en 0; avisar solo distorsiona y parece “duplicar” la necesidad. */
+    if (QUOTE_RESERVE_INVENTORY_STAGES.has(form.stage)) return []
+    const list: { productId: string; name: string; needed: number; available: number }[] = []
+    for (const [productId, needed] of Object.entries(requestedStockPorProducto)) {
+      const available = disponiblesPorProducto[productId] ?? 0
+      if (needed > available) {
+        list.push({
+          productId,
+          name: products.find(p => p.id === productId)?.name ?? productId,
+          needed,
+          available,
+        })
+      }
+    }
+    return list.sort((a, b) => a.name.localeCompare(b.name, 'es'))
+  }, [requestedStockPorProducto, disponiblesPorProducto, products, form.stage])
 
   const itemCurrencies  = new Set(items.map(i => i.product_currency).filter(Boolean))
   const needsUsdRate    = cur === 'USD' || itemCurrencies.has('USD')
@@ -172,20 +287,46 @@ export default function QuoteDialog({ open, onClose, quote, companies, contacts,
         discount_value:     q.discount_value     ?? 0,
       })
       // Cargar ítems
-      supabase.from('quote_items')
-        .select('id, product_id, product_name, product_currency, quantity, unit_price, subtotal, product:products(price, currency)')
+      supabase
+        .from('quote_items')
+        .select(
+          'id, product_id, product_name, product_currency, quantity, unit_price, subtotal, line_kind, pricing_model, inventory_item_id, product:products(price, currency, type, has_inventory)',
+        )
         .eq('quote_id', quote.id)
         .then(({ data }) => {
-          setItems((data ?? []).map(i => ({
-            tempId: mkTempId(), id: i.id, is_free: !i.product_id,
-            product_id: i.product_id ?? '', product_name: i.product_name ?? '',
-            product_currency: i.product_currency ?? (i as any).product?.currency ?? '',
-            original_price: (i as any).product?.price ?? Number(i.unit_price),
-            unit_price: Number(i.unit_price), quantity: Number(i.quantity), subtotal: Number(i.subtotal),
-          })))
+          setItems(
+            (data ?? []).map(raw => {
+              const i = raw as Record<string, unknown>
+              const prod = i.product as Pick<Product, 'price' | 'currency' | 'type' | 'has_inventory'> | undefined
+              let line_kind = i.line_kind as QuoteLineKind | undefined
+              if (!line_kind) {
+                if (!i.product_id) line_kind = 'custom'
+                else line_kind = prod?.type === 'service' ? 'service' : 'stock'
+              }
+              const pricing_model = (i.pricing_model as QuotePricingModel) ?? 'sale'
+              if (prod && productTracksSerialStock(prod as Product) && line_kind === 'procure') {
+                line_kind = 'stock'
+              }
+
+              return {
+                tempId: mkTempId(),
+                id: i.id as string,
+                is_free: !i.product_id,
+                product_id: (i.product_id as string) ?? '',
+                product_name: (i.product_name as string) ?? '',
+                product_currency:
+                  (i.product_currency as string) ?? prod?.currency ?? '',
+                original_price: prod?.price ?? Number(i.unit_price),
+                unit_price: Number(i.unit_price),
+                quantity: Number(i.quantity),
+                subtotal: Number(i.subtotal),
+                line_kind,
+                pricing_model,
+                inventory_item_id: (i.inventory_item_id as string | null) ?? null,
+              }
+            }),
+          )
         })
-      // Cargar interacciones vinculadas
-      loadCalls(quote.id)
     } else {
       const base: FormState = {
         ...EMPTY(profile?.id ?? ''),
@@ -194,8 +335,6 @@ export default function QuoteDialog({ open, onClose, quote, companies, contacts,
       }
       setForm(base)
       setItems([])
-      setCalls([])
-
       // Auto-cargar KAM lead si viene con empresa pre-llenada
       if (initialCompanyId && profile?.role !== 'kam') {
         supabase.from('company_kams').select('kam_id')
@@ -208,14 +347,10 @@ export default function QuoteDialog({ open, onClose, quote, companies, contacts,
     }
   }, [open, quote?.id]) // eslint-disable-line
 
-  const loadCalls = async (quoteId: string) => {
-    const { data } = await supabase
-      .from('calls')
-      .select('id, called_at, type, outcome, notes, contact:contacts(first_name,last_name), kam:profiles(full_name)')
-      .eq('quote_id', quoteId)
-      .order('called_at', { ascending: false })
-    setCalls((data as unknown as CallRow[]) ?? [])
-  }
+  /** Al cerrar el modal se borra el último resultado de sincronización con inventario. */
+  useEffect(() => {
+    if (!open) setInventoryReserveNote([])
+  }, [open])
 
   const set = (field: keyof FormState, value: string | number | boolean) =>
     setForm(prev => ({ ...prev, [field]: value }))
@@ -231,24 +366,82 @@ export default function QuoteDialog({ open, onClose, quote, companies, contacts,
   }
 
   /* items */
-  const addCatalogItem = () => setItems(prev => [...prev, {
-    tempId: mkTempId(), is_free: false, product_id: '', product_name: '',
-    product_currency: '', original_price: 0, unit_price: 0, quantity: 1, subtotal: 0,
-  }])
-  const addFreeItem = () => setItems(prev => [...prev, {
-    tempId: mkTempId(), is_free: true, product_id: '', product_name: '',
-    product_currency: cur, original_price: 0, unit_price: 0, quantity: 1, subtotal: 0,
-  }])
+  const addCatalogItem = () =>
+    setItems(prev => [
+      ...prev,
+      {
+        tempId: mkTempId(),
+        is_free: false,
+        product_id: '',
+        product_name: '',
+        product_currency: '',
+        original_price: 0,
+        unit_price: 0,
+        quantity: 1,
+        subtotal: 0,
+        line_kind: 'stock',
+        pricing_model: 'sale',
+        inventory_item_id: null,
+      },
+    ])
+  const addFreeItem = () =>
+    setItems(prev => [
+      ...prev,
+      {
+        tempId: mkTempId(),
+        is_free: true,
+        product_id: '',
+        product_name: '',
+        product_currency: cur,
+        original_price: 0,
+        unit_price: 0,
+        quantity: 1,
+        subtotal: 0,
+        line_kind: 'custom',
+        pricing_model: 'sale',
+        inventory_item_id: null,
+      },
+    ])
   const removeItem = (tempId: string) => setItems(prev => prev.filter(i => i.tempId !== tempId))
 
   const updateProduct = (tempId: string, productId: string) => {
-    const p = products.find(x => x.id === productId); if (!p) return
+    const p = products.find(x => x.id === productId)
+    if (!p) return
     const converted = convert(p.price, p.currency, cur, usdRate, ufRate)
-    setItems(prev => prev.map(i => i.tempId !== tempId ? i : {
-      ...i, product_id: p.id, product_name: p.name, product_currency: p.currency,
-      original_price: p.price, unit_price: converted, subtotal: converted * i.quantity,
-    }))
+    const lk = defaultLineKindForCatalogProduct(p)
+    setItems(prev =>
+      prev.map(i =>
+        i.tempId !== tempId
+          ? i
+          : {
+              ...i,
+              product_id: p.id,
+              product_name: p.name,
+              product_currency: p.currency,
+              original_price: p.price,
+              unit_price: converted,
+              subtotal: converted * i.quantity,
+              line_kind: lk,
+              inventory_item_id: null,
+            },
+      ),
+    )
   }
+  const updateLineKind = (tempId: string, kind: QuoteLineKind) => {
+    setItems(prev =>
+      prev.map(i => {
+        if (i.tempId !== tempId) return i
+        const p = products.find(x => x.id === i.product_id)
+        if (p && productTracksSerialStock(p) && kind === 'procure') return i
+        return { ...i, line_kind: kind }
+      }),
+    )
+  }
+
+  const updatePricingModel = (tempId: string, model: QuotePricingModel) => {
+    setItems(prev => prev.map(i => (i.tempId !== tempId ? i : { ...i, pricing_model: model })))
+  }
+
   const updateQty = (tempId: string, qty: number) => setItems(prev => prev.map(i => {
     if (i.tempId !== tempId) return i
     const q = Math.max(1, qty)
@@ -285,7 +478,9 @@ export default function QuoteDialog({ open, onClose, quote, companies, contacts,
     if (needsUsdRate && !usdRate) { setError('Ingresa el tipo de cambio USD → CLP'); return }
     if (needsUfRate  && !ufRate)  { setError('Ingresa el tipo de cambio UF → CLP'); return }
 
-    setLoading(true); setError(null)
+    setLoading(true)
+    setError(null)
+    setInventoryReserveNote([])
     try {
       let quoteNumber = quote?.quote_number
       if (!quote) {
@@ -322,22 +517,43 @@ export default function QuoteDialog({ open, onClose, quote, companies, contacts,
         : await supabase.from('quotes').insert(payload).select().single()
       if (qErr) throw qErr
 
+      /** Antes de borrar/recargar ítems: liberar reservas asociadas a la cotización existente */
+      if (quote?.id) await releaseReservationsForQuote(quote.id)
+
       if (items.length > 0) {
         const { error: delErr } = await supabase.from('quote_items').delete().eq('quote_id', saved.id)
         if (delErr) throw delErr
         const { error: insErr } = await supabase.from('quote_items').insert(
           items.map(i => ({
             quote_id: saved.id,
-            product_id: i.is_free ? null : i.product_id,
+            product_id: i.is_free ? null : i.product_id || null,
             product_name: i.product_name,
             product_currency: i.product_currency || null,
             quantity: i.quantity,
             unit_price: round(i.unit_price, cur),
-            subtotal:   round(i.subtotal,   cur),
-          }))
+            subtotal: round(i.subtotal, cur),
+            line_kind: i.is_free ? 'custom' : i.line_kind,
+            pricing_model: i.pricing_model,
+            procurement_plan: !i.is_free && i.line_kind === 'procure' ? 'manufacture' : null,
+            inventory_item_id: i.inventory_item_id || null,
+          })),
         )
         if (insErr) throw insErr
+      } else {
+        const { error: delEmptyErr } = await supabase.from('quote_items').delete().eq('quote_id', saved.id)
+        if (delEmptyErr) throw delEmptyErr
       }
+
+      let reserveMsgs: string[] = []
+      if (QUOTE_RESERVE_INVENTORY_STAGES.has(form.stage)) {
+        const r = await applyReservationsForQuote(saved.id)
+        reserveMsgs = r.messages
+        if (!r.ok) console.warn('[cotización] reserva inventario', r.messages.join(' | '))
+      }
+      setInventoryReserveNote(reserveMsgs)
+      void queryClient.invalidateQueries({ queryKey: ['inventory-disponibles-cotizacion'] })
+      void queryClient.invalidateQueries({ queryKey: ['fabricacion-pendiente-cotizaciones'] })
+
       onSaved()
     } catch (e: unknown) {
       setError((e as Error).message ?? 'Error inesperado')
@@ -348,6 +564,7 @@ export default function QuoteDialog({ open, onClose, quote, companies, contacts,
 
   const handleDelete = async () => {
     if (!quote || !confirm('¿Eliminar esta cotización?')) return
+    await releaseReservationsForQuote(quote.id)
     await supabase.from('quote_items').delete().eq('quote_id', quote.id)
     await supabase.from('quotes').delete().eq('id', quote.id)
     onSaved()
@@ -357,58 +574,96 @@ export default function QuoteDialog({ open, onClose, quote, companies, contacts,
 
   return (
     <>
-      <div className="fixed inset-0 z-50 flex items-center justify-center"
-        style={{ backgroundColor: 'rgba(0,0,0,0.4)' }}>
-        <div className="bg-white rounded-lg shadow-xl w-full max-w-4xl mx-4 flex flex-col" style={{ maxHeight: '92vh' }}>
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+        <div className="bg-white rounded-xl border border-gray-200 shadow-xl w-full max-w-4xl mx-4 flex flex-col max-h-[92vh]">
 
-          {/* Header */}
-          <div className="px-6 py-4 border-b flex items-center justify-between shrink-0">
-            <div>
-              <h2 className="text-base font-semibold text-gray-900">
+          {/* Header — tipografía alineada a ficha empresa v2 */}
+          <div className="px-4 py-3 border-b border-gray-200 bg-gray-50/80 flex items-start justify-between gap-3 shrink-0">
+            <div className="min-w-0 flex flex-wrap items-center gap-2">
+              <h2 className="text-sm font-semibold text-gray-900 shrink-0">
                 {quote ? quote.quote_number : 'Nueva cotización'}
               </h2>
-              {readonly && <p className="text-xs text-gray-400 mt-0.5">Solo lectura</p>}
+              {quote?.id && (
+                <>
+                  <span className="hidden sm:inline text-gray-300 select-none" aria-hidden>
+                    |
+                  </span>
+                  <div className="flex flex-wrap gap-1.5">
+                    <button type="button" className={QUOTE_DIALOG_NAV_BTN} onClick={scrollToDocumentos}>
+                      Documentos
+                    </button>
+                  </div>
+                </>
+              )}
+              {readonly && <p className="text-xs text-gray-400 w-full sm:w-auto">Solo lectura</p>}
             </div>
-            <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-xl leading-none">&times;</button>
+            <button
+              type="button"
+              onClick={onClose}
+              className="text-gray-400 hover:text-gray-600 text-xl leading-none shrink-0"
+              aria-label="Cerrar"
+            >
+              &times;
+            </button>
           </div>
 
           {/* Body */}
-          <div className="flex-1 overflow-y-auto px-6 py-4 space-y-5">
+          <div className="flex-1 overflow-y-auto px-4 py-4 space-y-5 scroll-smooth">
 
             {/* Info básica */}
             <div className="grid grid-cols-2 gap-4">
               <div className="col-span-2 space-y-1">
-                <Label>Título / Nombre del negocio *</Label>
+                <Label className="text-xs font-medium text-gray-600">Título / Nombre del negocio *</Label>
                 <Input value={form.title} onChange={e => set('title', e.target.value)}
                   placeholder="Ej: Renovación licencias 2025" disabled={readonly} />
               </div>
 
               <div className="col-span-2 space-y-1">
-                <Label>Empresa *</Label>
+                <Label className="text-xs font-medium text-gray-600">Empresa *</Label>
                 <Select value={form.company_id || '__none__'}
                   onValueChange={v => v !== '__none__' && handleCompanyChange(v)} disabled={readonly}>
-                  <SelectTrigger><SelectValue placeholder="Selecciona una empresa" /></SelectTrigger>
+                  <SelectTrigger className="text-sm"><SelectValue placeholder="Selecciona una empresa" /></SelectTrigger>
                   <SelectContent className="max-h-64 overflow-y-auto">
                     {companies.map(c => <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>)}
                   </SelectContent>
                 </Select>
+                {form.company_id && (
+                  <p className="text-xs text-gray-500 mt-1.5">
+                    <Link
+                      to={`/companies/${form.company_id}/v2?cfTab=quotes`}
+                      className="text-sm font-medium text-violet-700 hover:text-violet-900 hover:underline"
+                    >
+                      {companies.find(c => c.id === form.company_id)?.name ?? 'Ver ficha de la empresa'}
+                    </Link>
+                    <span className="text-gray-400"> — ficha v2</span>
+                  </p>
+                )}
               </div>
 
               <div className="space-y-1">
-                <Label>Contacto</Label>
+                <Label className="text-xs font-medium text-gray-600">Contacto</Label>
                 <Select value={form.contact_id || '__none__'}
                   onValueChange={v => set('contact_id', v === '__none__' ? '' : v)}
                   disabled={readonly || !form.company_id}>
                   <SelectTrigger><SelectValue placeholder={form.company_id ? 'Opcional' : 'Primero elige empresa'} /></SelectTrigger>
                   <SelectContent className="max-h-60 overflow-y-auto">
                     <SelectItem value="__none__">— Sin contacto —</SelectItem>
-                    {filteredContacts.map(c => <SelectItem key={c.id} value={c.id}>{c.first_name} {c.last_name}</SelectItem>)}
+                    {filteredContacts.map(c => {
+                      const name = `${c.first_name} ${c.last_name}`.trim() || 'Contacto'
+                      const cargo = c.position?.trim()
+                      const label = cargo ? `${name} - ${cargo}` : name
+                      return (
+                        <SelectItem key={c.id} value={c.id}>
+                          {label}
+                        </SelectItem>
+                      )
+                    })}
                   </SelectContent>
                 </Select>
               </div>
 
               <div className="space-y-1">
-                <Label>KAM</Label>
+                <Label className="text-xs font-medium text-gray-600">KAM</Label>
                 <Select value={form.kam_id || '__none__'}
                   onValueChange={v => set('kam_id', v === '__none__' ? '' : v)}
                   disabled={readonly || profile?.role === 'kam'}>
@@ -420,7 +675,7 @@ export default function QuoteDialog({ open, onClose, quote, companies, contacts,
               </div>
 
               <div className="space-y-1">
-                <Label>Estado</Label>
+                <Label className="text-xs font-medium text-gray-600">Estado</Label>
                 <Select value={form.stage} onValueChange={v => set('stage', v)} disabled={readonly}>
                   <SelectTrigger><SelectValue /></SelectTrigger>
                   <SelectContent>
@@ -430,33 +685,33 @@ export default function QuoteDialog({ open, onClose, quote, companies, contacts,
               </div>
 
               <div className="space-y-1">
-                <Label>Probabilidad (%)</Label>
+                <Label className="text-xs font-medium text-gray-600">Probabilidad (%)</Label>
                 <Input type="number" min={0} max={100} value={form.probability}
                   onChange={e => set('probability', parseInt(e.target.value) || 0)} disabled={readonly} />
               </div>
 
               <div className="space-y-1">
-                <Label>Cierre estimado</Label>
+                <Label className="text-xs font-medium text-gray-600">Cierre estimado</Label>
                 <Input type="date" value={form.expected_close}
                   onChange={e => set('expected_close', e.target.value)} disabled={readonly} />
               </div>
 
               <div className="space-y-1">
-                <Label>Válido hasta</Label>
+                <Label className="text-xs font-medium text-gray-600">Válido hasta</Label>
                 <Input type="date" value={form.valid_until}
                   onChange={e => set('valid_until', e.target.value)} disabled={readonly} />
               </div>
 
               {form.stage === 'rechazada' && (
                 <div className="col-span-2 space-y-1">
-                  <Label>Motivo de rechazo</Label>
+                  <Label className="text-xs font-medium text-gray-600">Motivo de rechazo</Label>
                   <Input value={form.lost_reason} onChange={e => set('lost_reason', e.target.value)}
                     placeholder="¿Por qué fue rechazada?" disabled={readonly} />
                 </div>
               )}
 
               <div className="space-y-1">
-                <Label>Moneda *</Label>
+                <Label className="text-xs font-medium text-gray-600">Moneda *</Label>
                 <Select value={cur} onValueChange={v => set('currency', v)} disabled={readonly}>
                   <SelectTrigger><SelectValue /></SelectTrigger>
                   <SelectContent>
@@ -468,7 +723,7 @@ export default function QuoteDialog({ open, onClose, quote, companies, contacts,
               </div>
 
               <div className="col-span-2 space-y-1">
-                <Label>Notas</Label>
+                <Label className="text-xs font-medium text-gray-600">Notas</Label>
                 <Textarea value={form.notes} onChange={e => set('notes', e.target.value)}
                   placeholder="Observaciones..." rows={2} disabled={readonly} />
               </div>
@@ -553,54 +808,144 @@ export default function QuoteDialog({ open, onClose, quote, companies, contacts,
                   Sin ítems — una cotización básica puede guardarse sin ítems
                 </div>
               ) : (
-                <div className="overflow-hidden rounded-lg border">
+                <>
+                  {advertenciasStock.length > 0 && (
+                    <div className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-950 mb-3 space-y-1">
+                      <p className="font-medium">Stock insuficiente en líneas «Stock propio»</p>
+                      <ul className="list-disc ml-4 space-y-0.5">
+                        {advertenciasStock.map(a => (
+                          <li key={a.productId}>
+                            <span className="font-medium">{a.name}</span>: en la línea «Stock propio» pedís {a.needed}{' '}
+                            unidad(es) y hay {a.available} disponible(s). Al aceptar la cotización se reservan las
+                            disponibles; el resto queda como fabricación pendiente (ver pantalla Inventario).
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                  <div className="overflow-hidden rounded-lg border">
                   <table className="w-full text-sm">
                     <thead className="border-b bg-gray-50">
                       <tr>
-                        <th className="px-3 py-2 text-left font-medium text-gray-600">Producto / Descripción</th>
-                        <th className="w-20 px-3 py-2 text-center font-medium text-gray-600">Cant.</th>
-                        <th className="w-44 px-3 py-2 text-right font-medium text-gray-600">Precio original</th>
-                        <th className="w-36 px-3 py-2 text-right font-medium text-gray-600">Subtotal ({sym})</th>
+                        <th className="px-3 py-2 text-left text-xs font-medium text-gray-600">Producto</th>
+                        <th className="w-20 px-3 py-2 text-center text-xs font-medium text-gray-600">Cant.</th>
+                        <th className="w-44 px-3 py-2 text-right text-xs font-medium text-gray-600">Precio original</th>
+                        <th className="w-36 px-3 py-2 text-right text-xs font-medium text-gray-600">Subtotal ({sym})</th>
                         {!readonly && <th className="w-8" />}
                       </tr>
                     </thead>
                     <tbody className="divide-y">
                       {items.map(item => {
                         const isDiff = !item.is_free && item.product_currency && item.product_currency !== cur
+                        const prodRow = products.find(x => x.id === item.product_id)
+                        const sx = stockPorLineaBodegaFabricar[item.tempId]
                         return (
                           <tr key={item.tempId} className={item.is_free ? 'bg-blue-50/40' : 'hover:bg-gray-50/60'}>
-                            <td className="px-3 py-2">
+                            <td className="px-3 py-2 align-middle min-w-0">
                               {item.is_free ? (
-                                <div className="flex items-center gap-2">
-                                  <span className="shrink-0 text-xs bg-blue-100 text-blue-700 rounded px-1.5 py-0.5 font-medium">Libre</span>
-                                  <Input value={item.product_name}
+                                <div className="flex items-center gap-2 min-w-0">
+                                  <span className="shrink-0 text-xs bg-blue-100 text-blue-700 rounded px-1.5 py-0.5 font-medium whitespace-nowrap">
+                                    {LINE_KIND_LABEL.custom}
+                                  </span>
+                                  <Input
+                                    value={item.product_name}
                                     onChange={e => updateFreeName(item.tempId, e.target.value)}
-                                    placeholder="Descripción..." className="h-8 text-sm flex-1" disabled={readonly} />
+                                    placeholder="Descripción..."
+                                    className="h-8 text-sm flex-1 min-w-0"
+                                    disabled={readonly}
+                                  />
                                 </div>
                               ) : (
-                                <Select value={item.product_id || '__none__'}
-                                  onValueChange={v => v !== '__none__' && updateProduct(item.tempId, v)}
-                                  disabled={readonly}>
-                                  <SelectTrigger className="h-8 text-sm">
-                                    <SelectValue placeholder="Selecciona un producto" />
-                                  </SelectTrigger>
-                                  <SelectContent className="max-h-60 overflow-y-auto">
-                                    {products.map(p => (
-                                      <SelectItem key={p.id} value={p.id}>
-                                        {p.name}{p.sku ? ` (${p.sku})` : ''}
-                                        <span className="ml-1 text-xs text-gray-400">· {p.currency}</span>
-                                      </SelectItem>
-                                    ))}
-                                  </SelectContent>
-                                </Select>
+                                <div className="flex items-center gap-2 min-w-0">
+                                    <div className="min-w-0 flex-1">
+                                      <Select
+                                        value={item.product_id || '__none__'}
+                                        onValueChange={v => v !== '__none__' && updateProduct(item.tempId, v)}
+                                        disabled={readonly}
+                                      >
+                                        <SelectTrigger className="h-9 text-sm w-full min-w-0">
+                                          {item.product_id && prodRow ? (
+                                            <span className="truncate text-left w-full block">
+                                              <span className="font-medium text-gray-900">{prodRow.name}</span>
+                                              {prodRow.description?.trim() ? (
+                                                <span className="text-gray-500">{` · ${prodRow.description.trim()}`}</span>
+                                              ) : null}
+                                              {sx ? (
+                                                <span className="text-gray-800 font-semibold">{` (${sx.desdeBodega} / ${sx.fabricar})`}</span>
+                                              ) : null}
+                                            </span>
+                                          ) : (
+                                            <SelectValue placeholder="Selecciona un producto" />
+                                          )}
+                                        </SelectTrigger>
+                                        <SelectContent className="z-[110] max-h-60 overflow-y-auto">
+                                          {products.map(p => (
+                                            <SelectItem key={p.id} value={p.id}>
+                                              {p.name}{p.sku ? ` (${p.sku})` : ''}
+                                              <span className="ml-1 text-xs text-gray-400">· {p.currency}</span>
+                                            </SelectItem>
+                                          ))}
+                                        </SelectContent>
+                                      </Select>
+                                    </div>
+                                    {prodRow?.type === 'service' && (
+                                      <span className="text-xs rounded bg-gray-100 text-gray-700 px-2 py-0.5 shrink-0 whitespace-nowrap">
+                                        {LINE_KIND_LABEL.service}
+                                      </span>
+                                    )}
+                                    {prodRow && prodRow.type !== 'service' && !productTracksSerialStock(prodRow) && (
+                                      <>
+                                        {readonly ? (
+                                          <span className="text-xs rounded bg-gray-100 text-gray-700 px-2 py-0.5 whitespace-nowrap">
+                                            {LINE_KIND_LABEL[item.line_kind]}
+                                          </span>
+                                        ) : (
+                                          <Select
+                                            value={
+                                              item.line_kind === 'procure' || item.line_kind === 'stock'
+                                                ? item.line_kind
+                                                : 'stock'
+                                            }
+                                            onValueChange={v => updateLineKind(item.tempId, v as QuoteLineKind)}
+                                          >
+                                            <SelectTrigger className="h-7 w-[148px] text-xs shrink-0">
+                                              <SelectValue />
+                                            </SelectTrigger>
+                                            <SelectContent>
+                                              <SelectItem value="stock">{LINE_KIND_LABEL.stock}</SelectItem>
+                                              <SelectItem value="procure">{LINE_KIND_LABEL.procure}</SelectItem>
+                                            </SelectContent>
+                                          </Select>
+                                        )}
+                                      </>
+                                    )}
+                                    {readonly ? (
+                                      <span className="text-xs rounded bg-violet-50 text-violet-800 px-2 py-0.5 shrink-0 whitespace-nowrap">
+                                        {PRICING_MODEL_LABEL[item.pricing_model]}
+                                      </span>
+                                    ) : (
+                                      <Select
+                                        value={item.pricing_model}
+                                        onValueChange={v => updatePricingModel(item.tempId, v as QuotePricingModel)}
+                                      >
+                                        <SelectTrigger className="h-7 min-w-[7.5rem] w-[132px] text-xs shrink-0">
+                                          <SelectValue />
+                                        </SelectTrigger>
+                                        <SelectContent>
+                                          <SelectItem value="sale">{PRICING_MODEL_LABEL.sale}</SelectItem>
+                                          <SelectItem value="monthly_rental">{PRICING_MODEL_LABEL.monthly_rental}</SelectItem>
+                                        </SelectContent>
+                                      </Select>
+                                    )}
+                                </div>
                               )}
                             </td>
-                            <td className="px-3 py-2">
+                            <td className="px-3 py-2 align-middle">
                               <Input type="number" min={1} value={item.quantity}
                                 onChange={e => updateQty(item.tempId, parseInt(e.target.value) || 1)}
                                 className="h-8 text-center text-sm" disabled={readonly} />
                             </td>
-                            <td className="px-3 py-2">
+                            <td className="px-3 py-2 align-middle">
                               {item.is_free ? (
                                 <div className="flex items-center gap-1">
                                   <Select value={item.product_currency || cur}
@@ -612,11 +957,13 @@ export default function QuoteDialog({ open, onClose, quote, companies, contacts,
                                       <SelectItem value="UF">UF</SelectItem>
                                     </SelectContent>
                                   </Select>
-                                  <Input type="number" min={0}
-                                    step={(item.product_currency || cur) === 'CLP' ? '1' : (item.product_currency || cur) === 'UF' ? '0.0001' : '0.01'}
+                                  <QuoteAmountInput
                                     value={item.original_price}
-                                    onChange={e => updatePrice(item.tempId, parseFloat(e.target.value) || 0)}
-                                    className="h-8 text-right text-sm flex-1 min-w-0" disabled={readonly} />
+                                    currency={item.product_currency || cur}
+                                    onChange={p => updatePrice(item.tempId, p)}
+                                    disabled={readonly}
+                                    className="h-8 text-right text-sm flex-1 min-w-0"
+                                  />
                                 </div>
                               ) : (
                                 <div className="flex flex-col items-end gap-0.5">
@@ -626,11 +973,13 @@ export default function QuoteDialog({ open, onClose, quote, companies, contacts,
                                         {symOf(item.product_currency)} {fmtNum(item.original_price, item.product_currency)}
                                       </span>
                                     )}
-                                    <Input type="number" min={0}
-                                      step={cur === 'CLP' ? '1' : cur === 'UF' ? '0.0001' : '0.01'}
+                                    <QuoteAmountInput
                                       value={item.unit_price}
-                                      onChange={e => updatePrice(item.tempId, parseFloat(e.target.value) || 0)}
-                                      className="h-8 text-right text-sm w-28" disabled={readonly} />
+                                      currency={cur}
+                                      onChange={p => updatePrice(item.tempId, p)}
+                                      disabled={readonly}
+                                      className="h-8 text-right text-sm w-32"
+                                    />
                                   </div>
                                   {isDiff && <span className="text-xs text-gray-400">{sym} convertido</span>}
                                 </div>
@@ -653,6 +1002,7 @@ export default function QuoteDialog({ open, onClose, quote, companies, contacts,
                     </tbody>
                   </table>
                 </div>
+                </>
               )}
             </div>
 
@@ -661,7 +1011,7 @@ export default function QuoteDialog({ open, onClose, quote, companies, contacts,
               <div className="flex items-start justify-between gap-8">
                 <div className="flex-1 space-y-4 pt-1">
                   <div className="space-y-2">
-                    <Label>Descuento</Label>
+                    <Label className="text-xs font-medium text-gray-600">Descuento</Label>
                     <div className="flex items-center gap-2 flex-wrap">
                       <Select value={form.discount_type}
                         onValueChange={v => { set('discount_type', v); if (v === 'none') set('discount_value', 0) }}
@@ -733,70 +1083,25 @@ export default function QuoteDialog({ open, onClose, quote, companies, contacts,
               </div>
             )}
 
-            <Separator />
-
-            {/* ── Historial de interacciones ───────────────────────── */}
-            {quote && (
-              <div>
-                <div className="flex items-center justify-between mb-3">
-                  <h3 className="font-medium text-gray-900 text-sm">
-                    Interacciones
-                    {calls.length > 0 && (
-                      <span className="ml-2 text-xs bg-gray-100 text-gray-500 rounded-full px-2 py-0.5">{calls.length}</span>
-                    )}
-                  </h3>
-                  {!readonly && (
-                    <Button type="button" size="sm" variant="outline"
-                      onClick={() => setCallDialogOpen(true)}
-                      className="gap-1.5">
-                      <PlusCircle size={14} /> Registrar interacción
-                    </Button>
-                  )}
-                </div>
-
-                {calls.length === 0 ? (
-                  <div className="rounded-lg border-2 border-dashed border-gray-200 py-6 text-center text-sm text-gray-400">
-                    Sin interacciones registradas para esta cotización
-                  </div>
-                ) : (
-                  <ul className="space-y-2">
-                    {calls.map(c => (
-                      <li key={c.id} className="rounded-lg border bg-gray-50 px-4 py-3">
-                        <div className="flex items-start justify-between gap-3">
-                          <div className="flex items-center gap-2">
-                            {TYPE_ICON[c.type]}
-                            <span className="text-sm font-medium text-gray-900">{TYPE_LABEL[c.type]}</span>
-                            {c.contact && (
-                              <span className="text-xs text-gray-500">
-                                · {c.contact.first_name} {c.contact.last_name}
-                              </span>
-                            )}
-                          </div>
-                          <div className="text-right shrink-0">
-                            <p className={`text-xs font-medium ${OUTCOME_COLOR[c.outcome]}`}>
-                              {OUTCOME_LABEL[c.outcome]}
-                            </p>
-                            <p className="text-xs text-gray-400">{fmtDate(c.called_at)}</p>
-                          </div>
-                        </div>
-                        {c.notes && (
-                          <p className="text-xs text-gray-500 mt-1.5 leading-relaxed">{c.notes}</p>
-                        )}
-                        {c.kam && (
-                          <p className="text-[10px] text-gray-400 mt-1">{c.kam.full_name}</p>
-                        )}
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </div>
+            {quote?.id && form.company_id && (
+              <QuoteLinkedDocumentsBlock key={quote.id} quoteId={quote.id} companyId={form.company_id} canEdit={!readonly} />
             )}
 
+            {inventoryReserveNote.length > 0 && (
+              <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-800 space-y-1">
+                <p className="font-semibold text-slate-900">Inventario después de guardar</p>
+                <ul className="list-disc ml-4 space-y-0.5">
+                  {inventoryReserveNote.map((m, i) => (
+                    <li key={i}>{m}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
             {error && <p className="text-sm text-red-500">{error}</p>}
           </div>
 
           {/* Footer */}
-          <div className="px-6 py-4 border-t flex items-center gap-2 shrink-0">
+          <div className="px-4 py-3 border-t border-gray-200 flex items-center gap-2 shrink-0 bg-gray-50/50">
             {quote && profile?.role === 'super_admin' && (
               <Button variant="destructive" onClick={handleDelete} className="mr-auto">Eliminar</Button>
             )}
@@ -814,26 +1119,6 @@ export default function QuoteDialog({ open, onClose, quote, companies, contacts,
           </div>
         </div>
       </div>
-
-      {/* CallDialog encima del QuoteDialog */}
-      {quote && callDialogOpen && (
-        <CallDialog
-          open={callDialogOpen}
-          onClose={() => setCallDialogOpen(false)}
-          call={null}
-          companies={companies}
-          contacts={contacts}
-          kams={kams}
-          initialQuoteId={quote.id}
-          initialCompanyId={form.company_id}
-          initialContactId={form.contact_id}
-          initialKamId={form.kam_id}
-          onSaved={() => {
-            setCallDialogOpen(false)
-            loadCalls(quote.id)
-          }}
-        />
-      )}
 
       {/* Vista de impresión */}
       {showPrint && quote && (

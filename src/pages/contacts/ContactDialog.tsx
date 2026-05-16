@@ -18,6 +18,8 @@ interface Props {
   contact: Contact | null
   companies: Company[]
   onSaved: () => void
+  /** Al crear contacto nuevo, pre-selecciona la empresa (p. ej. desde la ficha empresa) */
+  initialCompanyId?: string
 }
 
 type FormState = {
@@ -46,7 +48,7 @@ const empty: FormState = {
   notes: '',
 }
 
-export default function ContactDialog({ open, onClose, contact, companies, onSaved }: Props) {
+export default function ContactDialog({ open, onClose, contact, companies, onSaved, initialCompanyId }: Props) {
   const [form, setForm] = useState<FormState>(empty)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -66,10 +68,10 @@ export default function ContactDialog({ open, onClose, contact, companies, onSav
         notes:      contact.notes ?? '',
       })
     } else {
-      setForm(empty)
+      setForm({ ...empty, company_id: initialCompanyId ?? '' })
     }
     setError(null)
-  }, [contact, open])
+  }, [contact, open, initialCompanyId])
 
   const set = (field: keyof FormState, value: string | boolean) =>
     setForm(prev => ({ ...prev, [field]: value }))
