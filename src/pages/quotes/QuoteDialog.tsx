@@ -13,6 +13,7 @@ import type {
   QuotePricingModel,
   QuoteStage,
 } from '@/types'
+import { normalizeQuoteStage } from '@/types'
 import { Button }    from '@/components/ui/button'
 import { Input }     from '@/components/ui/input'
 import { Label }     from '@/components/ui/label'
@@ -24,6 +25,8 @@ import {
 import { Plus, Trash2, RefreshCw, PackageSearch, Printer } from 'lucide-react'
 import QuotePrintView from './QuotePrintView'
 import QuoteLinkedDocumentsBlock from '@/components/quotes/QuoteLinkedDocumentsBlock'
+import QuoteInvoiceValidationDialog from '@/components/quotes/QuoteInvoiceValidationDialog'
+import { fetchInvoiceForQuote } from '@/lib/quoteInvoiceFulfillment'
 import QuoteAmountInput from '@/components/quotes/QuoteAmountInput'
 import {
   QUOTE_RESERVE_INVENTORY_STAGES,
@@ -75,7 +78,7 @@ const STAGES: { value: QuoteStage; label: string }[] = [
   { value: 'en_negociacion', label: 'En negociación' },
   { value: 'enviada',        label: 'Enviada' },
   { value: 'aceptada',       label: 'Aceptada' },
-  { value: 'orden_de_venta', label: 'Orden de venta' },
+  { value: 'facturada', label: 'Facturada' },
   { value: 'rechazada',      label: 'Rechazada' },
 ]
 
@@ -147,6 +150,13 @@ export default function QuoteDialog({ open, onClose, quote, companies, contacts,
   const [showPrint, setShowPrint]           = useState(false)
   /** Mensajes tras guardar cuando la etapa aplica reserva automática */
   const [inventoryReserveNote, setInventoryReserveNote] = useState<string[]>([])
+  const [invoicePending, setInvoicePending] = useState<{
+    quoteId: string
+    companyId: string
+    quoteNumber: string
+    quoteTotal: number
+    quoteCurrency: string
+  } | null>(null)
 
   const readonly = profile?.role === 'reader' ||
     (profile?.role === 'kam' && !!quote && quote.kam_id !== profile.id)
@@ -272,7 +282,7 @@ export default function QuoteDialog({ open, onClose, quote, companies, contacts,
         company_id:         q.company_id,
         contact_id:         q.contact_id        ?? '',
         kam_id:             q.kam_id,
-        stage:              q.stage             ?? 'borrador',
+        stage:              normalizeQuoteStage(q.stage ?? 'borrador'),
         probability:        q.probability       ?? 20,
         expected_close:     q.expected_close    ?? '',
         lost_reason:        q.lost_reason       ?? '',
@@ -482,17 +492,33 @@ export default function QuoteDialog({ open, onClose, quote, companies, contacts,
     setError(null)
     setInventoryReserveNote([])
     try {
+      const prevStage = quote ? normalizeQuoteStage(quote.stage) : 'borrador'
+      let saveStage = form.stage
+      let openInvoiceAfter = false
+      if (form.stage === 'facturada' && prevStage !== 'facturada') {
+        if (!quote?.id) {
+          setError('Guarde la cotización antes de marcarla como facturada.')
+          setLoading(false)
+          return
+        }
+        const existingInv = await fetchInvoiceForQuote(quote.id)
+        if (!existingInv) {
+          saveStage = prevStage
+          openInvoiceAfter = true
+        }
+      }
+
       let quoteNumber = quote?.quote_number
       if (!quote) {
         const { count } = await supabase.from('quotes').select('id', { count: 'exact', head: true })
         quoteNumber = `COT-${new Date().getFullYear()}-${String((count ?? 0) + 1).padStart(4, '0')}`
       }
 
-      const closed = ['aceptada', 'rechazada', 'orden_de_venta'].includes(form.stage)
+      const closed = ['aceptada', 'rechazada', 'facturada'].includes(saveStage)
       const payload: Record<string, unknown> = {
         company_id: form.company_id, contact_id: form.contact_id || null,
         kam_id: form.kam_id, title: form.title.trim(),
-        stage: form.stage, probability: form.probability,
+        stage: saveStage, probability: form.probability,
         expected_close: form.expected_close || null,
         lost_reason: form.stage === 'rechazada' ? form.lost_reason || null : null,
         closed_at: closed ? (quote?.closed_at ?? new Date().toISOString()) : null,
@@ -545,7 +571,7 @@ export default function QuoteDialog({ open, onClose, quote, companies, contacts,
       }
 
       let reserveMsgs: string[] = []
-      if (QUOTE_RESERVE_INVENTORY_STAGES.has(form.stage)) {
+      if (QUOTE_RESERVE_INVENTORY_STAGES.has(saveStage)) {
         const r = await applyReservationsForQuote(saved.id)
         reserveMsgs = r.messages
         if (!r.ok) console.warn('[cotización] reserva inventario', r.messages.join(' | '))
@@ -553,6 +579,18 @@ export default function QuoteDialog({ open, onClose, quote, companies, contacts,
       setInventoryReserveNote(reserveMsgs)
       void queryClient.invalidateQueries({ queryKey: ['inventory-disponibles-cotizacion'] })
       void queryClient.invalidateQueries({ queryKey: ['fabricacion-pendiente-cotizaciones'] })
+
+      if (openInvoiceAfter) {
+        setInvoicePending({
+          quoteId: saved.id as string,
+          companyId: form.company_id,
+          quoteNumber: (saved.quote_number as string) ?? quoteNumber ?? '',
+          quoteTotal: Number(saved.total) || total,
+          quoteCurrency: (saved.currency as string) || cur,
+        })
+        setForm(f => ({ ...f, stage: prevStage }))
+        return
+      }
 
       onSaved()
     } catch (e: unknown) {
@@ -1123,6 +1161,23 @@ export default function QuoteDialog({ open, onClose, quote, companies, contacts,
       {/* Vista de impresión */}
       {showPrint && quote && (
         <QuotePrintView quoteId={quote.id} onClose={() => setShowPrint(false)} />
+      )}
+
+      {invoicePending && (
+        <QuoteInvoiceValidationDialog
+          open
+          quoteId={invoicePending.quoteId}
+          companyId={invoicePending.companyId}
+          quoteNumber={invoicePending.quoteNumber}
+          quoteTotal={invoicePending.quoteTotal}
+          quoteCurrency={invoicePending.quoteCurrency}
+          onClose={() => setInvoicePending(null)}
+          onCompleted={() => {
+            setInvoicePending(null)
+            onSaved()
+            onClose()
+          }}
+        />
       )}
     </>
   )

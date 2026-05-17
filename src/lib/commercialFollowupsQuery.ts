@@ -373,7 +373,7 @@ export async function reopenQuoteNegotiationStage(quoteId: string): Promise<void
     .from('quotes')
     .update({ stage: 'en_negociacion', closed_at: null })
     .eq('id', quoteId)
-    .in('stage', ['aceptada', 'rechazada', 'orden_de_venta'])
+    .in('stage', ['aceptada', 'rechazada', 'facturada', 'orden_de_venta'])
 
   if (error) throw new Error(error.message)
 }

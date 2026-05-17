@@ -8,7 +8,9 @@ import {
 } from '@/lib/quoteInventoryReservation'
 import { useAuth } from '@/hooks/useAuth'
 import type { Company, Contact, Profile, Product, Quote, QuoteStage } from '@/types'
+import { normalizeQuoteStage } from '@/types'
 import QuoteDialog from './QuoteDialog'
+import QuoteInvoiceValidationDialog from '@/components/quotes/QuoteInvoiceValidationDialog'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import {
@@ -33,7 +35,7 @@ const STAGES: {
   { key: 'en_negociacion', label: 'En negociación', color: 'text-violet-700',  bg: 'bg-violet-50 border-violet-200',   dot: 'bg-violet-400',  dropBg: 'bg-violet-100'  },
   { key: 'enviada',        label: 'Enviada',        color: 'text-blue-700',    bg: 'bg-blue-50 border-blue-200',       dot: 'bg-blue-400',    dropBg: 'bg-blue-100'    },
   { key: 'aceptada',       label: 'Aceptada',       color: 'text-emerald-700', bg: 'bg-emerald-50 border-emerald-200', dot: 'bg-emerald-400', dropBg: 'bg-emerald-100' },
-  { key: 'orden_de_venta', label: 'Orden de venta', color: 'text-teal-700',    bg: 'bg-teal-50 border-teal-200',       dot: 'bg-teal-500',    dropBg: 'bg-teal-100'    },
+  { key: 'facturada', label: 'Facturada', color: 'text-teal-700',    bg: 'bg-teal-50 border-teal-200',       dot: 'bg-teal-500',    dropBg: 'bg-teal-100'    },
   { key: 'rechazada',      label: 'Rechazada',      color: 'text-red-600',     bg: 'bg-red-50 border-red-200',         dot: 'bg-red-400',     dropBg: 'bg-red-100'     },
 ]
 
@@ -41,7 +43,7 @@ const STAGE_MAP = Object.fromEntries(STAGES.map(s => [s.key, s]))
 
 /** Mismas etapas que el dashboard considera “pipeline activo” */
 const PIPELINE_STAGES: QuoteStage[] = ['borrador', 'en_negociacion', 'enviada']
-const WON_STAGES_FILTER: QuoteStage[] = ['aceptada', 'orden_de_venta']
+const WON_STAGES_FILTER: QuoteStage[] = ['aceptada', 'facturada']
 
 const fmtCurrency = (amount: number, currency: string) => {
   if (currency === 'CLP') return new Intl.NumberFormat('es-CL', { style: 'currency', currency: 'CLP', maximumFractionDigits: 0 }).format(amount)
@@ -76,6 +78,7 @@ export default function QuotesPage({ initialStage }: { initialStage?: QuoteStage
   const [deleting, setDeleting]             = useState(false)
   const [dragOver, setDragOver]             = useState<QuoteStage | null>(null)
   const [highlightId, setHighlightId]       = useState<string | undefined>()
+  const [invoiceKanban, setInvoiceKanban]   = useState<QuoteRow | null>(null)
   /** Filtros especiales activados desde URL (panel / enlaces) */
   const [cierres30Only, setCierres30Only]   = useState(false)
   const [ganadasMesOnly, setGanadasMesOnly] = useState(false)
@@ -206,7 +209,7 @@ export default function QuotesPage({ initialStage }: { initialStage?: QuoteStage
       .from('quotes')
       .select('*, company:companies(id,name), contact:contacts(id,first_name,last_name), kam:profiles(id,full_name)')
       .order('created_at', { ascending: false })
-    setQuotes(data ?? [])
+    setQuotes((data ?? []).map(q => ({ ...q, stage: normalizeQuoteStage(q.stage) })))
     setLoading(false); setQuotesReady(true)
   }, [])
 
@@ -225,8 +228,12 @@ export default function QuotesPage({ initialStage }: { initialStage?: QuoteStage
     if (!id) return
     const q = quotes.find(x => x.id === id)
     if (!q || q.stage === newStage) return
+    if (newStage === 'facturada') {
+      setInvoiceKanban(q)
+      return
+    }
     setQuotes(prev => prev.map(x => x.id === id ? { ...x, stage: newStage } : x))
-    const closed = ['aceptada', 'rechazada', 'orden_de_venta'].includes(newStage)
+    const closed = ['aceptada', 'rechazada', 'facturada'].includes(newStage)
     const { error } = await supabase.from('quotes').update({
       stage: newStage,
       closed_at: closed && !q.closed_at ? new Date().toISOString() : (!closed ? null : q.closed_at),
@@ -436,7 +443,7 @@ export default function QuotesPage({ initialStage }: { initialStage?: QuoteStage
                 ) : filtered.map(q => {
                   const st = STAGE_MAP[q.stage]
                   const userCanEdit = canEdit(q.kam?.id ?? '')
-                  const expired = q.valid_until && q.valid_until < today && !['aceptada','orden_de_venta','rechazada'].includes(q.stage)
+                  const expired = q.valid_until && q.valid_until < today && !['aceptada','facturada','rechazada'].includes(q.stage)
                   return (
                     <TableRow key={q.id} id={`quote-row-${q.id}`}
                       className={highlightId === q.id ? 'bg-blue-50' : 'hover:bg-gray-50'}>
@@ -523,6 +530,22 @@ export default function QuotesPage({ initialStage }: { initialStage?: QuoteStage
         initialCallId={initialCallId}
         onSaved={() => { setDialogOpen(false); loadQuotes() }}
       />
+
+      {invoiceKanban && (
+        <QuoteInvoiceValidationDialog
+          open
+          quoteId={invoiceKanban.id}
+          companyId={invoiceKanban.company_id}
+          quoteNumber={invoiceKanban.quote_number}
+          quoteTotal={invoiceKanban.total}
+          quoteCurrency={invoiceKanban.currency}
+          onClose={() => setInvoiceKanban(null)}
+          onCompleted={() => {
+            setInvoiceKanban(null)
+            void loadQuotes()
+          }}
+        />
+      )}
     </div>
   )
 }
@@ -543,7 +566,7 @@ function KanbanCard({
   highlighted?: boolean
 }) {
   const expired = quote.valid_until && quote.valid_until < today
-    && !['aceptada','orden_de_venta','rechazada'].includes(quote.stage)
+    && !['aceptada','facturada','rechazada'].includes(quote.stage)
   return (
     <div
       id={`kanban-card-${quote.id}`}

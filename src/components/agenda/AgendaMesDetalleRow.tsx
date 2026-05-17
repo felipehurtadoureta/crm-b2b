@@ -157,7 +157,7 @@ export default function AgendaMesDetalleRow({ p, hoyStr, profile, canEdit }: Age
       if (fe) throw new Error(fe.message)
       const prevStage = (antes?.stage as QuoteStage | undefined) ?? undefined
 
-      const closed = ['aceptada', 'rechazada', 'orden_de_venta'].includes(stage)
+      const closed = ['aceptada', 'rechazada', 'facturada'].includes(stage)
       const { error } = await supabase
         .from('quotes')
         .update({
@@ -355,7 +355,7 @@ export default function AgendaMesDetalleRow({ p, hoyStr, profile, canEdit }: Age
                   <span className="inline-block w-px h-5 bg-gray-200 shrink-0 mx-1" aria-hidden />
                 ) : null}
                 <span className="text-[10px] text-gray-500 shrink-0">Cerrar:</span>
-                {(['aceptada', 'orden_de_venta', 'rechazada'] as const).map(st => (
+                {(['aceptada', 'facturada', 'rechazada'] as const).map(st => (
                   <Button
                     key={st}
                     type="button"
@@ -365,7 +365,7 @@ export default function AgendaMesDetalleRow({ p, hoyStr, profile, canEdit }: Age
                     disabled={mutEtapaCot.isPending}
                     onClick={() => {
                       const label =
-                        st === 'orden_de_venta'
+                        st === 'facturada'
                           ? 'orden de venta'
                           : st === 'aceptada'
                             ? 'aceptada'
@@ -379,8 +379,8 @@ export default function AgendaMesDetalleRow({ p, hoyStr, profile, canEdit }: Age
                       mutEtapaCot.mutate(st)
                     }}
                   >
-                    {st === 'orden_de_venta'
-                      ? 'O. venta'
+                    {st === 'facturada'
+                      ? 'Facturada'
                       : st === 'aceptada'
                         ? 'Aceptada'
                         : 'Rechazada'}

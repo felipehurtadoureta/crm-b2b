@@ -20,6 +20,12 @@ export function roleCanAccessPath(role: Role | undefined, pathname: string): boo
   if (!role) return false
   if (role === 'super_admin') return true
   if (pathMatchesPrefix(pathname, ADMIN_ONLY_PREFIXES)) return false
+  if (pathname.startsWith('/bank/glosas')) {
+    return false
+  }
+  if (pathMatchesPrefix(pathname, ['/bank'])) {
+    return role === 'kam'
+  }
   if (pathMatchesPrefix(pathname, KAM_OR_ADMIN_PREFIXES)) {
     // `super_admin` ya retornó arriba; aquí solo KAM
     return role === 'kam'
@@ -41,6 +47,7 @@ export type NavItemId =
   | 'admin_organization'
   | 'admin_users'
   | 'admin_import'
+  | 'bank_book'
 
 export interface NavItemConfig {
   id: NavItemId
@@ -60,6 +67,7 @@ export const NAV_ITEMS_CONFIG: NavItemConfig[] = [
   { id: 'admin_organization', label: 'Organización', href: '/admin/organization', roles: ['super_admin'] },
   { id: 'admin_users', label: 'Usuarios', href: '/admin/users', roles: ['super_admin'] },
   { id: 'admin_import', label: 'Importar Excel', href: '/admin/import', roles: ['super_admin'] },
+  { id: 'bank_book', label: 'Libro de banco', href: '/bank', roles: ['super_admin', 'kam'] },
 ]
 
 export function navItemsForRole(role: Role | undefined): NavItemConfig[] {

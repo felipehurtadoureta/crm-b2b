@@ -242,7 +242,7 @@ export interface CommercialFollowupReminder {
   updated_at: string
 }
 
-export type InvoiceStatus = 'borrador' | 'pendiente' | 'pagada' | 'anulada'
+export type InvoiceStatus = 'borrador' | 'pendiente' | 'pagada' | 'anulada' | 'nota_credito'
 
 export interface Invoice {
   id: string
@@ -254,7 +254,43 @@ export interface Invoice {
   total: number
   currency: string
   paid_at: string | null
+  sii_validated_at?: string | null
   notes: string | null
+  created_at: string
+  updated_at: string
+}
+
+/** Cuenta bancaria registrada al importar cartola (tabla `bank_accounts`). */
+export interface BankAccount {
+  id: string
+  bank_name: string
+  account_number: string
+  account_label: string | null
+  holder_name: string | null
+  holder_rut: string | null
+  currency: string
+  created_at: string
+  updated_at: string
+}
+
+/** Movimiento de cartola (tabla `bank_transactions`). */
+export interface BankTransaction {
+  id: string
+  bank_account_id: string
+  movement_date: string
+  description: string
+  debit: number
+  credit: number
+  balance: number | null
+  document_number: string | null
+  trn: string | null
+  branch: string | null
+  invoice_id: string | null
+  glosa: string | null
+  notes: string | null
+  import_hash: string
+  raw: Record<string, unknown> | null
+  imported_by: string | null
   created_at: string
   updated_at: string
 }
@@ -355,14 +391,20 @@ export type QuoteStage =
   | 'enviada'
   | 'aceptada'
   | 'rechazada'
-  | 'orden_de_venta'
+  | 'facturada'
 
 /** Etapas de cotización que cierran el hilo de seguimiento en cotización. */
 export const QUOTE_FOLLOWUP_CLOSED_STAGES: readonly QuoteStage[] = [
   'aceptada',
   'rechazada',
-  'orden_de_venta',
+  'facturada',
 ] as const
+
+/** Compatibilidad con datos previos a renombrar la etapa. */
+export function normalizeQuoteStage(stage: string): QuoteStage {
+  if (stage === 'orden_de_venta') return 'facturada'
+  return stage as QuoteStage
+}
 
 export interface Quote {
   id: string

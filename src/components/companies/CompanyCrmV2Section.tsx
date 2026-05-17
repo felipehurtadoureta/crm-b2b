@@ -85,7 +85,7 @@ const QUOTE_STAGE_LABEL: Record<QuoteStage, string> = {
   enviada: 'Enviada',
   aceptada: 'Aceptada',
   rechazada: 'Rechazada',
-  orden_de_venta: 'Orden de venta',
+  facturada: 'Facturada',
 }
 
 /** Botones de acción del bloque (mismo estilo que atajos de la ficha empresa) */
@@ -97,7 +97,7 @@ const QUOTE_STAGE_STYLE: Record<string, string> = {
   en_negociacion: 'bg-violet-100 text-violet-800',
   enviada: 'bg-blue-100 text-blue-800',
   aceptada: 'bg-emerald-100 text-emerald-800',
-  orden_de_venta: 'bg-teal-100 text-teal-800',
+  facturada: 'bg-teal-100 text-teal-800',
   rechazada: 'bg-red-100 text-red-700',
 }
 

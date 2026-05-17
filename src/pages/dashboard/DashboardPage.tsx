@@ -61,14 +61,14 @@ interface AdminData {
 
 /* ─── constantes ────────────────────────────────────────────────── */
 const ACTIVE_STAGES = ['borrador', 'en_negociacion', 'enviada']
-const WON_STAGES    = ['aceptada', 'orden_de_venta']
+const WON_STAGES    = ['aceptada', 'facturada']
 
 const STAGE_LABEL: Record<string, string> = {
   borrador:       'Borrador',
   en_negociacion: 'En negociación',
   enviada:        'Enviada',
   aceptada:       'Aceptada',
-  orden_de_venta: 'Orden de venta',
+  facturada: 'Facturada',
   rechazada:      'Rechazada',
 }
 const STAGE_CHIP: Record<string, string> = {

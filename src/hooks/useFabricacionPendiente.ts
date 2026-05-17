@@ -1,6 +1,6 @@
 /**
  * Por producto: unidades pactadas desde stock (`line_kind stock`) menos seriales ya asignados,
- * solo en cotizaciones `aceptada` u `orden_de_venta`.
+ * solo en cotizaciones `aceptada`.
  *
  * Nota: un mismo producto puede figurar en varias cotizaciones en cierre; el total es la suma
  * de cada línea. Para depuración, `byQuote` desglosa el aporte por cotización.
@@ -27,7 +27,7 @@ export type FabricacionRow = {
   byQuote?: FabricacionQuoteSlice[]
 }
 
-const STAGES_CIERRE = ['aceptada', 'orden_de_venta'] as const
+const STAGES_CIERRE = ['aceptada'] as const
 
 /** Particiona arrays para `.in(...)` sin exceder límites prácticos de URL / PostgREST. */
 function chunk<T>(xs: readonly T[], size: number): T[][] {

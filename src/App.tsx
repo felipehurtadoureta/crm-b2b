@@ -16,6 +16,8 @@ import AgendaPage from '@/pages/agenda/AgendaPage'
 import AdminUsersPage from '@/pages/admin/AdminUsersPage'
 import AdminOrganizationPage from '@/pages/admin/AdminOrganizationPage'
 import AdminImportPage from '@/pages/admin/AdminImportPage'
+import BankBookPage from '@/pages/bank/BankBookPage'
+import BankGlosasAdminPage from '@/pages/bank/BankGlosasAdminPage'
 
 export default function App() {
   const { session, loading } = useSession()
@@ -45,12 +47,14 @@ export default function App() {
           <Route path="/contacts"  element={<ContactsPage />} />
           <Route path="/calls"     element={<CallsPage />} />
           <Route path="/quotes"    element={<QuotesPage />} />
-          <Route path="/sales" element={<QuotesPage initialStage="orden_de_venta" />} />
+          <Route path="/sales" element={<QuotesPage initialStage="facturada" />} />
           <Route path="/products"  element={<ProductsPage />} />
           <Route path="/inventory" element={<InventoryPage />} />
           <Route path="/admin/organization" element={<AdminOrganizationPage />} />
           <Route path="/admin/users" element={<AdminUsersPage />} />
           <Route path="/admin/import" element={<AdminImportPage />} />
+          <Route path="/bank" element={<BankBookPage />} />
+          <Route path="/bank/glosas" element={<BankGlosasAdminPage />} />
         </Route>
       </Routes>
     </BrowserRouter>

@@ -1,17 +1,14 @@
 /**
  * Reserva / libera números de serie en inventario según cotización aceptada u orden de venta.
  *
- * Etapas que mantienen reserva: `aceptada`, `orden_de_venta`.
+ * Etapas que mantienen reserva: solo `aceptada` (al facturar se confirman series vendidas).
  * Al salir de esas etapas o al borrar cotización, los ítems vuelven a `disponible` si estaban `reservado`.
  */
 import { supabase } from '@/lib/supabase'
 import { productTracksSerialStock } from '@/lib/productInventoryRules'
 import type { Product, QuoteStage } from '@/types'
 
-export const QUOTE_RESERVE_INVENTORY_STAGES: ReadonlySet<QuoteStage> = new Set([
-  'aceptada',
-  'orden_de_venta',
-])
+export const QUOTE_RESERVE_INVENTORY_STAGES: ReadonlySet<QuoteStage> = new Set(['aceptada'])
 
 export type ReservationApplyResult = { ok: boolean; messages: string[] }
 

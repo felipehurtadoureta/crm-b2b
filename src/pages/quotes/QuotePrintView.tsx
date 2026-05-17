@@ -24,7 +24,8 @@ interface QuoteItem {
 interface QuoteData {
   id: string
   quote_number: string
-  status: string
+  stage?: string
+  status?: string
   currency: string
   subtotal: number
   tax_amount: number
@@ -156,10 +157,11 @@ export default function QuotePrintView({ quoteId, onClose }: Props) {
 
   if (!quote) return null
 
-  const isOV         = quote.status === 'orden_de_venta'
+  const stage = quote.stage ?? quote.status ?? ''
+  const isFacturada  = stage === 'facturada' || stage === 'orden_de_venta'
   const sym          = SYMBOL[quote.currency] ?? '$'
   const cur          = quote.currency
-  const title        = isOV ? 'ORDEN DE VENTA' : 'COTIZACIÓN'
+  const title        = isFacturada ? 'FACTURA / CIERRE' : 'COTIZACIÓN'
   const hasDiscount  = quote.discount_amount != null && Number(quote.discount_amount) > 0
   const hasItemDcto  = items.some(i => Number(i.discount_pct) > 0)
 

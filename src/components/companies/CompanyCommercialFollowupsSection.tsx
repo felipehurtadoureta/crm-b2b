@@ -500,7 +500,10 @@ export default function CompanyCommercialFollowupsSection({
   const selectedInvoice = (invoicesQ.data ?? []).find(i => i.id === invoiceIdEff)
   const quoteHiloAbierto = !selectedQuote || isQuoteSeguimientoAbierto(selectedQuote.stage)
   const invoiceHiloAbierto =
-    !selectedInvoice || (selectedInvoice.status !== 'pagada' && selectedInvoice.status !== 'anulada')
+    !selectedInvoice ||
+    (selectedInvoice.status !== 'pagada' &&
+      selectedInvoice.status !== 'anulada' &&
+      selectedInvoice.status !== 'nota_credito')
   const canSubmitNew =
     canEdit &&
     formContactId &&

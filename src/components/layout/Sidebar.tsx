@@ -13,6 +13,7 @@ import {
   Settings,
   LogOut,
   Upload,
+  Landmark,
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
@@ -33,6 +34,7 @@ const ICON_MAP: Record<NavItemId, LucideIcon> = {
   admin_organization: Settings,
   admin_users:        Shield,
   admin_import:       Upload,
+  bank_book:          Landmark,
 }
 
 export default function Sidebar() {
