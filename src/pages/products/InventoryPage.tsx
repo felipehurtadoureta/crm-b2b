@@ -2,13 +2,17 @@ import { useEffect, useMemo, useState } from 'react'
 import { supabase } from '@/lib/supabase'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { Search, MapPin, ChevronDown, ChevronRight, Pencil, FileSpreadsheet } from 'lucide-react'
+import { Search, MapPin, ChevronDown, ChevronRight, Pencil, FileSpreadsheet, Plus, Boxes } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import type { Product } from '@/types'
 import ProductDialog from './ProductDialog'
 import InventoryExcelImportDialog from './InventoryExcelImportDialog'
 
 import { useFabricacionPendiente } from '@/hooks/useFabricacionPendiente'
+import InventoryExitDialog, { type InventoryExitItem } from '@/components/inventory/InventoryExitDialog'
+import InventoryManageDialog from '@/components/inventory/InventoryManageDialog'
+import InventoryItemEditDialog, { type InventoryItemEditRow } from '@/components/inventory/InventoryItemEditDialog'
+import type { Company } from '@/types'
 
 interface InventoryRow {
   id: string
@@ -21,6 +25,7 @@ interface InventoryRow {
   notes?: string
   destination_notes?: string
   installed_address?: string
+  custody_company_id?: string | null
   created_at: string
   updated_at: string
   products: {
@@ -67,7 +72,12 @@ export default function InventoryPage() {
   const [expanded, setExpanded]       = useState<Set<string>>(() => new Set())
   const [dialogOpen, setDialogOpen]             = useState(false)
   const [importExcelOpen, setImportExcelOpen]   = useState(false)
+  const [exitOpen, setExitOpen]                 = useState(false)
+  const [companies, setCompanies]               = useState<Company[]>([])
   const [productToEdit, setProductToEdit] = useState<Product | null>(null)
+  /** null = cerrado; sin productId = elegir producto al agregar */
+  const [manageOpen, setManageOpen] = useState<{ productId?: string; productName?: string } | null>(null)
+  const [editItem, setEditItem] = useState<InventoryItemEditRow | null>(null)
 
   async function load() {
     setLoading(true)
@@ -75,7 +85,7 @@ export default function InventoryPage() {
       const { data, error } = await supabase
         .from('inventory_items')
         .select(
-          'id, product_id, serial_number, status, custody, reference_price, reference_currency, notes, destination_notes, installed_address, created_at, updated_at, products(name, sku)',
+          'id, product_id, serial_number, status, custody, reference_price, reference_currency, notes, destination_notes, installed_address, custody_company_id, created_at, updated_at, products(name, sku)',
         )
         .order('updated_at', { ascending: false })
       if (error) throw error
@@ -97,6 +107,11 @@ export default function InventoryPage() {
   }
 
   useEffect(() => { load() }, [])
+
+  useEffect(() => {
+    supabase.from('companies').select('id, name').eq('status', 'activo').order('name')
+      .then(({ data }) => setCompanies((data ?? []) as Company[]))
+  }, [])
 
   const filtered = items.filter(i => {
     const matchStatus  = statusFilter === 'all' || i.status === statusFilter
@@ -146,6 +161,18 @@ export default function InventoryPage() {
     dañado:     items.filter(i => i.status === 'dañado').length,
   }
 
+  const exitItems: InventoryExitItem[] = useMemo(
+    () => items
+      .filter(i => i.status === 'disponible')
+      .map(i => ({
+        id: i.id,
+        serial_number: i.serial_number,
+        product_id: i.product_id,
+        product_name: i.products?.name ?? '—',
+      })),
+    [items],
+  )
+
   function toggleGroup(productId: string) {
     setExpanded(prev => {
       const next = new Set(prev)
@@ -175,9 +202,26 @@ export default function InventoryPage() {
             {groups.length} producto{groups.length === 1 ? '' : 's'} · {filtered.length} unidad{filtered.length === 1 ? '' : 'es'}
           </p>
         </div>
-        <Button type="button" variant="outline" size="sm" className="gap-1.5 shrink-0" onClick={() => setImportExcelOpen(true)}>
-          <FileSpreadsheet size={15} /> Importar Excel
-        </Button>
+        <div className="flex flex-wrap gap-2 shrink-0">
+          <Button type="button" size="sm" className="gap-1.5" onClick={() => setManageOpen({})}>
+            <Plus size={15} /> Agregar unidad
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="gap-1.5"
+            onClick={() => {
+              setStatusFilter('disponible')
+              setExitOpen(true)
+            }}
+          >
+            Registrar salida
+          </Button>
+          <Button type="button" variant="outline" size="sm" className="gap-1.5" onClick={() => setImportExcelOpen(true)}>
+            <FileSpreadsheet size={15} /> Importar Excel
+          </Button>
+        </div>
       </div>
 
       {errFabricacion && (
@@ -189,12 +233,11 @@ export default function InventoryPage() {
       {!!fabricacionFilas?.length && (
         <div className="rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 space-y-2">
           <p className="text-sm font-medium text-slate-900">
-            Fabricación pendiente (suma de todas las cotizaciones en estado aceptada u orden de venta)
+            Fabricación / abastecimiento pendiente (cotizaciones aceptadas)
           </p>
           <p className="text-xs text-slate-600 leading-relaxed">
-            Cantidad pedida en líneas «stock» con inventario por serie, menos unidades ya enlazadas por número de serie.
-            Si el número te sorprende, revisa si hay otra cotización en cierre que pide el mismo modelo o varias líneas del
-            mismo producto.
+            Suma de cantidades en líneas «Comprar / fabricar» por producto. El inventario físico se registra por separado
+            en esta pantalla.
           </p>
           <ul className="text-sm text-slate-800 space-y-2 list-disc ml-5">
             {fabricacionFilas.map(f => (
@@ -293,19 +336,28 @@ export default function InventoryPage() {
                         )
                       })()}
                     </div>
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      className="shrink-0 gap-1.5 h-8"
-                      onClick={e => {
-                        e.stopPropagation()
-                        void openEditProduct(g.productId)
-                      }}
-                    >
-                      <Pencil size={13} />
-                      Editar producto
-                    </Button>
+                    <div className="flex flex-wrap gap-1.5 shrink-0" onClick={e => e.stopPropagation()}>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="gap-1.5 h-8"
+                        onClick={() => setManageOpen({ productId: g.productId, productName: g.name })}
+                      >
+                        <Boxes size={13} />
+                        Gestionar seriales
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="gap-1.5 h-8"
+                        onClick={() => void openEditProduct(g.productId)}
+                      >
+                        <Pencil size={13} />
+                        Producto
+                      </Button>
+                    </div>
                   </div>
 
                   {isOpen && (
@@ -319,6 +371,7 @@ export default function InventoryPage() {
                             <th className="px-4 py-2 text-left">Ubicación / Destino</th>
                             <th className="px-4 py-2 text-center">Estado</th>
                             <th className="px-4 py-2 text-left">Actualizado</th>
+                            <th className="px-4 py-2 text-right w-20"> </th>
                           </tr>
                         </thead>
                         <tbody className="divide-y divide-gray-50">
@@ -359,6 +412,21 @@ export default function InventoryPage() {
                                   day: '2-digit', month: 'short', year: 'numeric',
                                 })}
                               </td>
+                              <td className="px-4 py-2.5 text-right">
+                                <Button
+                                  type="button"
+                                  variant="ghost"
+                                  size="sm"
+                                  className="h-7 w-7 p-0"
+                                  title="Editar unidad"
+                                  onClick={() => setEditItem({
+                                    ...item,
+                                    products: { name: g.name },
+                                  })}
+                                >
+                                  <Pencil size={14} className="text-gray-500" />
+                                </Button>
+                              </td>
                             </tr>
                           ))}
                         </tbody>
@@ -383,6 +451,30 @@ export default function InventoryPage() {
         product={productToEdit}
         onClose={() => { setDialogOpen(false); setProductToEdit(null) }}
         onSaved={() => { void load() }}
+      />
+
+      <InventoryExitDialog
+        open={exitOpen}
+        items={exitItems}
+        companies={companies}
+        onClose={() => setExitOpen(false)}
+        onCompleted={() => void load()}
+      />
+
+      <InventoryManageDialog
+        open={manageOpen !== null}
+        productId={manageOpen?.productId}
+        productName={manageOpen?.productName}
+        onClose={() => setManageOpen(null)}
+        onChanged={() => void load()}
+      />
+
+      <InventoryItemEditDialog
+        open={editItem !== null}
+        item={editItem}
+        companies={companies}
+        onClose={() => setEditItem(null)}
+        onSaved={() => void load()}
       />
     </div>
   )

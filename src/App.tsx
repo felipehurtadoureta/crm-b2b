@@ -11,13 +11,14 @@ import ContactsPage from '@/pages/contacts/ContactsPage'
 import CallsPage from '@/pages/calls/CallsPage'
 import ProductsPage from '@/pages/products/ProductsPage'
 import InventoryPage from '@/pages/products/InventoryPage'
+import InvoicesPage from '@/pages/invoices/InvoicesPage'
+import DocumentsPage from '@/pages/documents/DocumentsPage'
 import QuotesPage from '@/pages/quotes/QuotesPage'
 import AgendaPage from '@/pages/agenda/AgendaPage'
 import AdminUsersPage from '@/pages/admin/AdminUsersPage'
-import AdminOrganizationPage from '@/pages/admin/AdminOrganizationPage'
-import AdminImportPage from '@/pages/admin/AdminImportPage'
 import BankBookPage from '@/pages/bank/BankBookPage'
 import BankGlosasAdminPage from '@/pages/bank/BankGlosasAdminPage'
+import SiiDocumentsPage from '@/pages/sii/SiiDocumentsPage'
 
 export default function App() {
   const { session, loading } = useSession()
@@ -50,11 +51,14 @@ export default function App() {
           <Route path="/sales" element={<QuotesPage initialStage="facturada" />} />
           <Route path="/products"  element={<ProductsPage />} />
           <Route path="/inventory" element={<InventoryPage />} />
-          <Route path="/admin/organization" element={<AdminOrganizationPage />} />
+          <Route path="/invoices" element={<InvoicesPage />} />
+          <Route path="/documents" element={<DocumentsPage />} />
           <Route path="/admin/users" element={<AdminUsersPage />} />
-          <Route path="/admin/import" element={<AdminImportPage />} />
+          <Route path="/admin/organization" element={<Navigate to="/admin/users?tab=organization" replace />} />
+          <Route path="/admin/import" element={<Navigate to="/admin/users?tab=import" replace />} />
           <Route path="/bank" element={<BankBookPage />} />
           <Route path="/bank/glosas" element={<BankGlosasAdminPage />} />
+          <Route path="/sii" element={<SiiDocumentsPage />} />
         </Route>
       </Routes>
     </BrowserRouter>

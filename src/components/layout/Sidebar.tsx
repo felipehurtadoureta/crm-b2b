@@ -9,11 +9,12 @@ import {
   FileText,
   Package,
   Warehouse,
+  Receipt,
+  FolderOpen,
   Shield,
-  Settings,
   LogOut,
-  Upload,
   Landmark,
+  FileSpreadsheet,
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
@@ -21,20 +22,25 @@ import { Separator } from '@/components/ui/separator'
 import { useAuth } from '@/hooks/useAuth'
 import { useCrmAppSettings } from '@/hooks/useCrmAppSettings'
 import { mergeCrmAppSettings } from '@/lib/crmAppSettings'
-import { navItemsForRole, type NavItemId } from '@/lib/permissions'
+import { navStructureForRole, type NavItemId } from '@/lib/permissions'
 
 const ICON_MAP: Record<NavItemId, LucideIcon> = {
-  dashboard:          LayoutDashboard,
-  agenda:             CalendarDays,
-  companies:          Building2,
-  contacts:           Users,
-  quotes:             FileText,
-  products:           Package,
-  inventory:          Warehouse,
-  admin_organization: Settings,
-  admin_users:        Shield,
-  admin_import:       Upload,
-  bank_book:          Landmark,
+  dashboard: LayoutDashboard,
+  agenda: CalendarDays,
+  companies: Building2,
+  contacts: Users,
+  quotes: FileText,
+  products: Package,
+  inventory: Warehouse,
+  invoices: Receipt,
+  documents: FolderOpen,
+  admin_users: Shield,
+  bank_book: Landmark,
+  sii_documents: FileSpreadsheet,
+}
+
+function isNavActive(pathname: string, href: string) {
+  return pathname === href || (href !== '/' && pathname.startsWith(href))
 }
 
 export default function Sidebar() {
@@ -50,7 +56,7 @@ export default function Sidebar() {
     .join('')
     .toUpperCase() ?? '??'
 
-  const items = navItemsForRole(profile?.role)
+  const structure = navStructureForRole(profile?.role)
   const navSkeleton = profileLoading && !profile
 
   const m = branding.data ?? mergeCrmAppSettings(null)
@@ -62,7 +68,6 @@ export default function Sidebar() {
 
   return (
     <aside className="w-60 min-h-screen bg-gray-900 text-white flex flex-col">
-      {/* Marca (logo + nombre producto) */}
       <div className="px-5 pt-5 pb-4 shrink-0">
         {showLogo && (
           <img
@@ -78,7 +83,6 @@ export default function Sidebar() {
 
       <Separator className="bg-gray-700 shrink-0" />
 
-      {/* Usuario debajo del logo */}
       <div className="px-4 py-3 flex items-center gap-3 shrink-0">
         <Avatar className="h-8 w-8">
           <AvatarFallback className="bg-gray-600 text-white text-xs">
@@ -114,35 +118,63 @@ export default function Sidebar() {
 
       <Separator className="bg-gray-700 shrink-0" />
 
-      <nav className="flex-1 px-3 py-4 space-y-1 overflow-y-auto min-h-0">
+      <nav className="flex-1 px-3 py-4 space-y-3 overflow-y-auto min-h-0">
         {navSkeleton ? (
-          <>
-            {Array.from({ length: 6 }).map((_, i) => (
-              <div
-                key={i}
-                className="h-9 rounded-md bg-gray-800/80 animate-pulse"
-                aria-hidden
-              />
-            ))}
-          </>
+          Array.from({ length: 6 }).map((_, i) => (
+            <div key={i} className="h-9 rounded-md bg-gray-800/80 animate-pulse" aria-hidden />
+          ))
         ) : (
-          items.map(({ id, label, href }) => {
-            const Icon = ICON_MAP[id]
-            const active = location.pathname === href || (href !== '/' && location.pathname.startsWith(href))
+          structure.map(entry => {
+            if (entry.type === 'item') {
+              const { id, label, href } = entry.item
+              const Icon = ICON_MAP[id]
+              const active = isNavActive(location.pathname, href)
+              return (
+                <Link
+                  key={href}
+                  to={href}
+                  className={cn(
+                    'flex items-center gap-3 px-3 py-2 rounded-md text-sm transition-colors',
+                    active
+                      ? 'bg-gray-700 text-white font-medium'
+                      : 'text-gray-400 hover:bg-gray-800 hover:text-white',
+                  )}
+                >
+                  <Icon size={16} />
+                  {label}
+                </Link>
+              )
+            }
+
+            const { group } = entry
             return (
-              <Link
-                key={href}
-                to={href}
-                className={cn(
-                  'flex items-center gap-3 px-3 py-2 rounded-md text-sm transition-colors',
-                  active
-                    ? 'bg-gray-700 text-white font-medium'
-                    : 'text-gray-400 hover:bg-gray-800 hover:text-white',
-                )}
-              >
-                <Icon size={16} />
-                {label}
-              </Link>
+              <div key={group.id} className="space-y-1 pt-1">
+                <p className="px-3 text-[10px] font-semibold uppercase tracking-wider text-gray-500">
+                  {group.title}
+                </p>
+                {group.items.map(({ id, label, href }) => {
+                  const Icon = ICON_MAP[id]
+                  const active =
+                    href === '/admin/users'
+                      ? location.pathname.startsWith('/admin')
+                      : isNavActive(location.pathname, href)
+                  return (
+                    <Link
+                      key={href}
+                      to={href}
+                      className={cn(
+                        'flex items-center gap-3 px-3 py-2 rounded-md text-sm transition-colors',
+                        active
+                          ? 'bg-gray-700 text-white font-medium'
+                          : 'text-gray-400 hover:bg-gray-800 hover:text-white',
+                      )}
+                    >
+                      <Icon size={16} />
+                      {label}
+                    </Link>
+                  )
+                })}
+              </div>
             )
           })
         )}

@@ -175,7 +175,11 @@ async function runImport(
   return { createdCompanies, skippedCompanies, createdContacts, errors }
 }
 
-export default function AdminImportPage() {
+interface Props {
+  embedded?: boolean
+}
+
+export default function AdminImportPage({ embedded = false }: Props) {
   const { profile, loading } = useAuth()
   const wbRef = useRef<ParsedWorkbook | null>(null)
   const [fileName, setFileName] = useState<string | null>(null)
@@ -254,12 +258,14 @@ export default function AdminImportPage() {
   }
 
   return (
-    <div className="mx-auto max-w-4xl space-y-8">
+    <div className={embedded ? 'max-w-4xl space-y-8' : 'mx-auto max-w-4xl space-y-8'}>
       <div>
-        <h1 className="text-2xl font-semibold text-gray-900">Importar empresas y contactos</h1>
+        <h2 className={embedded ? 'text-lg font-semibold text-gray-900' : 'text-2xl font-semibold text-gray-900'}>
+          Importar empresas y contactos
+        </h2>
         <p className="text-sm text-gray-500 mt-1">
-          Solo super_admin. Subí un Excel (.xlsx). Podés usar dos hojas (empresas + contactos) como en tu archivo de ejemplo;
-          el archivo no se sube al servidor: se procesa en el navegador y se inserta en Supabase con tu sesión.
+          Suba un Excel (.xlsx). Puede usar dos hojas (empresas + contactos); el archivo se procesa en el navegador y se
+          inserta en Supabase con su sesión.
         </p>
       </div>
 

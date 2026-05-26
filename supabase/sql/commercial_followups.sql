@@ -86,6 +86,8 @@ create table if not exists public.commercial_followups (
   importance text not null default 'media'
     check (importance in ('baja', 'media', 'alta')),
   next_follow_up_at timestamptz,
+  next_follow_up_kind text
+    check (next_follow_up_kind is null or next_follow_up_kind in ('reunion', 'mail', 'llamado')),
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   constraint commercial_followups_subject_company_ck check (
@@ -215,7 +217,7 @@ begin
 
   if new.next_follow_up_at is not null then
     insert into public.commercial_followup_reminders (
-      company_id, subject_type, quote_id, invoice_id, due_date, status, source_followup_id, importance
+      company_id, subject_type, quote_id, invoice_id, due_date, status, source_followup_id, importance, next_follow_up_kind
     )
     values (
       new.company_id,
@@ -225,7 +227,8 @@ begin
       new.next_follow_up_at,
       'open',
       new.id,
-      coalesce(new.importance, 'media')
+      coalesce(new.importance, 'media'),
+      coalesce(new.next_follow_up_kind, 'llamado')
     );
   end if;
 
@@ -244,6 +247,8 @@ create table if not exists public.commercial_followup_reminders (
   quote_id uuid references public.quotes (id) on delete cascade,
   invoice_id uuid references public.invoices (id) on delete cascade,
   due_date timestamptz not null,
+  next_follow_up_kind text
+    check (next_follow_up_kind is null or next_follow_up_kind in ('reunion', 'mail', 'llamado')),
   importance text not null default 'media'
     check (importance in ('baja', 'media', 'alta')),
   status text not null default 'open'
@@ -305,25 +310,54 @@ create trigger trg_commercial_followups_after_ins
   after insert on public.commercial_followups
   for each row execute function public.commercial_followups_after_insert();
 
--- Cierre de hilos: cotización en etapa final
+-- Cierre / reapertura de hilos al cambiar etapa de cotización
+create or replace function public.quote_stage_closes_followups(st text)
+returns boolean
+language sql
+immutable
+as $$
+  select coalesce(
+    case when st = 'orden_de_venta' then 'facturada' else st end,
+    'borrador'
+  ) in ('aceptada', 'rechazada', 'facturada');
+$$;
+
 create or replace function public.quotes_close_commercial_reminders()
 returns trigger
 language plpgsql
 security invoker
 set search_path = public
 as $$
+declare
+  old_closed boolean;
+  new_closed boolean;
 begin
-  if new.stage is distinct from old.stage
-    and new.stage in ('aceptada', 'rechazada', 'orden_de_venta') then
-    update public.commercial_followup_reminders r
-    set
-      status = 'cancelled',
-      closed_at = now(),
-      closed_reason = 'quote_closed',
-      updated_at = now()
-    where r.status = 'open'
-      and r.subject_type = 'quote'
-      and r.quote_id = new.id;
+  if new.stage is distinct from old.stage then
+    old_closed := public.quote_stage_closes_followups(old.stage::text);
+    new_closed := public.quote_stage_closes_followups(new.stage::text);
+
+    if new_closed and not old_closed then
+      update public.commercial_followup_reminders r
+      set
+        status = 'cancelled',
+        closed_at = now(),
+        closed_reason = 'quote_closed',
+        updated_at = now()
+      where r.status = 'open'
+        and r.subject_type = 'quote'
+        and r.quote_id = new.id;
+    elsif old_closed and not new_closed then
+      update public.commercial_followup_reminders r
+      set
+        status = 'open',
+        closed_at = null,
+        closed_reason = null,
+        updated_at = now()
+      where r.status = 'cancelled'
+        and r.closed_reason = 'quote_closed'
+        and r.subject_type = 'quote'
+        and r.quote_id = new.id;
+    end if;
   end if;
   return new;
 end;

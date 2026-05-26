@@ -46,8 +46,61 @@ function fileExtension(name: string): string {
   return i >= 0 ? name.slice(i + 1).toLowerCase() : ''
 }
 
+/** Nombre seguro para claves de Supabase Storage (solo ASCII: letras, números, punto, guión, guión bajo). */
 export function safeCompanyDocumentFileName(name: string) {
-  return name.replace(/[^\w.\-()áéíóúñÁÉÍÓÚÑ ]+/g, '_').slice(0, 180)
+  const trimmed = name.trim() || 'documento'
+  const dot = trimmed.lastIndexOf('.')
+  const ext = dot > 0 ? trimmed.slice(dot + 1).toLowerCase().replace(/[^a-z0-9]/g, '') : ''
+  const stem = trimmed.slice(0, dot > 0 ? dot : trimmed.length)
+  const asciiStem = stem
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-zA-Z0-9._-]+/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^[_-]+|[_-]+$/g, '')
+    .slice(0, 120) || 'documento'
+  return ext ? `${asciiStem}.${ext}` : asciiStem
+}
+
+/** PostgREST aún no expone `invoice_id` (migración pendiente). */
+export function isMissingInvoiceIdColumnError(message: string | undefined, code?: string): boolean {
+  if (!message) return false
+  const m = message.toLowerCase()
+  return (
+    m.includes('invoice_id') &&
+    (m.includes('schema cache') ||
+      m.includes('could not find') ||
+      m.includes('column') ||
+      m.includes('does not exist'))
+  )
+}
+
+/** Cotización vinculada a la factura (para asociar el PDF si falta columna `invoice_id`). */
+async function resolveQuoteIdForDocumentLink(
+  quoteId: string | null,
+  invoiceId: string | null,
+): Promise<string | null> {
+  const direct = quoteId?.trim()
+  if (direct) return direct
+  if (!invoiceId?.trim()) return null
+  const { data, error } = await supabase
+    .from('invoices')
+    .select('quote_id')
+    .eq('id', invoiceId.trim())
+    .maybeSingle()
+  if (error) return null
+  return (data?.quote_id as string | null)?.trim() || null
+}
+
+type CompanyDocumentInsertRow = {
+  company_id: string
+  storage_path: string
+  file_name: string
+  mime_type: string | null
+  category: CompanyDocumentCategory
+  uploaded_by: string | null
+  quote_id?: string
+  invoice_id?: string
 }
 
 export function validateCompanyDocumentFile(file: File): string | null {
@@ -89,6 +142,7 @@ export async function uploadCompanyDocumentFiles(
 
   const failures: { name: string; reason: string }[] = []
   let uploaded = 0
+  const linkedQuoteId = await resolveQuoteIdForDocumentLink(quoteId, invoiceId)
 
   for (const file of files) {
     const validation = validateCompanyDocumentFile(file)
@@ -121,16 +175,7 @@ export async function uploadCompanyDocumentFiles(
     const quoteForRow = invoiceId ? null : quoteId?.trim() || null
     const invoiceForRow = invoiceId?.trim() || null
 
-    const row: {
-      company_id: string
-      storage_path: string
-      file_name: string
-      mime_type: string | null
-      category: CompanyDocumentCategory
-      uploaded_by: string | null
-      quote_id?: string
-      invoice_id?: string
-    } = {
+    const row: CompanyDocumentInsertRow = {
       company_id: companyId,
       storage_path: path,
       file_name: file.name,
@@ -141,16 +186,33 @@ export async function uploadCompanyDocumentFiles(
     if (quoteForRow) row.quote_id = quoteForRow
     if (invoiceForRow) row.invoice_id = invoiceForRow
 
-    const { error: insErr } = await supabase.from('company_documents').insert(row)
+    let insErr = (await supabase.from('company_documents').insert(row)).error
+
+    // Sin columna invoice_id en Supabase: asociar por quote_id de la factura o solo empresa.
+    if (insErr && invoiceForRow && isMissingInvoiceIdColumnError(insErr.message, insErr.code)) {
+      const base: CompanyDocumentInsertRow = {
+        company_id: row.company_id,
+        storage_path: row.storage_path,
+        file_name: row.file_name,
+        mime_type: row.mime_type,
+        category: row.category,
+        uploaded_by: row.uploaded_by,
+      }
+      if (linkedQuoteId) {
+        insErr = (await supabase.from('company_documents').insert({ ...base, quote_id: linkedQuoteId })).error
+      } else {
+        insErr = (await supabase.from('company_documents').insert(base)).error
+      }
+    }
 
     if (insErr) {
       await supabase.storage.from(COMPANY_DOCUMENTS_BUCKET).remove([path])
       let reason = insErr.message
       if (/quote_id|invoice_id|exclusive|quote_invoice/i.test(reason) || /schema cache/i.test(reason)) {
         reason =
-          'Revise migraciones: quote_id / invoice_id / restricción exclusiva en company_documents ' +
-          '(ej. supabase/sql/company_documents_quote_id.sql y company_documents_invoice_id.sql). '
-          + String(insErr.message)
+          'Ejecute en Supabase SQL Editor: supabase/sql/company_documents_invoice_id.sql ' +
+          '(y company_documents_quote_id.sql si aplica). Detalle: ' +
+          String(insErr.message)
       }
       failures.push({ name: file.name, reason })
       continue

@@ -50,7 +50,7 @@ begin
 
   if new.next_follow_up_at is not null then
     insert into public.commercial_followup_reminders (
-      company_id, subject_type, quote_id, invoice_id, due_date, status, source_followup_id, importance
+      company_id, subject_type, quote_id, invoice_id, due_date, status, source_followup_id, importance, next_follow_up_kind
     )
     values (
       new.company_id,
@@ -60,7 +60,8 @@ begin
       new.next_follow_up_at,
       'open',
       new.id,
-      coalesce(new.importance, 'media')
+      coalesce(new.importance, 'media'),
+      coalesce(new.next_follow_up_kind, 'llamado')
     );
   end if;
 

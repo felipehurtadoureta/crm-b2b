@@ -1,3 +1,4 @@
+/** @deprecated Módulo legacy sin ruta activa; no modifica inventario (ver InventoryPage). */
 import { useEffect, useState } from 'react'
 import { supabase } from '@/lib/supabase'
 import type { Company, Contact, Profile, Product } from '@/types'
@@ -355,17 +356,7 @@ export default function SalesOrderDialog({ open, onClose, orderId, onSaved }: Pr
       const { error: itemErr } = await supabase.from('sales_order_items').insert(itemPayloads)
       if (itemErr) throw itemErr
 
-      // Actualizar inventario
-      const newInvIds = items
-        .map(i => i.inventory_item_id)
-        .filter(id => id && id !== NO_INVENTORY) as string[]
-
-      if (status === 'confirmada' && prevStatus !== 'confirmada' && newInvIds.length) {
-        await supabase.from('inventory_items').update({ status: 'vendido' }).in('id', newInvIds)
-      }
-      if (status === 'cancelada' && prevStatus === 'confirmada' && oldInvIds.length) {
-        await supabase.from('inventory_items').update({ status: 'disponible' }).in('id', oldInvIds)
-      }
+      /** Inventario desacoplado: las salidas se registran en el módulo Inventario. */
 
       onSaved()
     } catch (e: any) {

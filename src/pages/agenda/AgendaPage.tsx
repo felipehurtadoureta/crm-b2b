@@ -29,6 +29,56 @@ function tituloDiaLargo(dateStr: string) {
   })
 }
 
+function grupoHeaderClass(key: ReturnType<typeof bucketPendiente>) {
+  if (key === 'vencido') return 'bg-red-50 text-red-900'
+  if (key === 'hoy') return 'bg-amber-50 text-amber-900'
+  return 'bg-gray-50 text-gray-800'
+}
+
+function AgendaPendientesLista({
+  grupos,
+  hoyStr,
+  profile,
+  canEdit,
+}: {
+  grupos: { key: ReturnType<typeof bucketPendiente>; titulo: string; items: PendienteItem[] }[]
+  hoyStr: string
+  profile: ReturnType<typeof useAuth>['profile']
+  canEdit: boolean
+}) {
+  return (
+    <div className="space-y-6">
+      {grupos.map(({ key, titulo, items: lista }) =>
+        lista.length === 0 ? null : (
+          <section key={key} className="rounded-xl border border-gray-200 bg-white overflow-hidden shadow-sm">
+            <div
+              className={cn(
+                'px-4 py-2.5 border-b text-sm font-semibold flex items-center justify-between',
+                grupoHeaderClass(key),
+              )}
+            >
+              <span>{titulo}</span>
+              <span className="text-xs font-normal text-gray-500">{lista.length}</span>
+            </div>
+            <ul className="divide-y divide-gray-100">
+              {lista.map(p => (
+                <li key={p.key}>
+                  <AgendaMesDetalleRow
+                    p={p}
+                    hoyStr={hoyStr}
+                    profile={profile ?? undefined}
+                    canEdit={canEdit}
+                  />
+                </li>
+              ))}
+            </ul>
+          </section>
+        ),
+      )}
+    </div>
+  )
+}
+
 export default function AgendaPage() {
   const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
@@ -90,6 +140,19 @@ export default function AgendaPage() {
     if (!selectedMesDay) return []
     return items.filter(p => p.fecha.slice(0, 10) === selectedMesDay)
   }, [items, selectedMesDay])
+
+  /** Mismos buckets que la vista lista, pero solo ítems del día elegido en el calendario. */
+  const gruposDiaMes = useMemo(() => {
+    if (!selectedMesDay) return []
+    const orden: ReturnType<typeof bucketPendiente>[] = ['vencido', 'hoy', 'semana', 'luego']
+    const map = new Map<ReturnType<typeof bucketPendiente>, PendienteItem[]>()
+    for (const k of orden) map.set(k, [])
+    for (const p of itemsDiaMes) {
+      const b = bucketPendiente(p.fecha, hoyStr)
+      map.get(b)!.push(p)
+    }
+    return orden.map(k => ({ key: k, titulo: grupoTitulo(k), items: map.get(k)! }))
+  }, [itemsDiaMes, hoyStr, selectedMesDay])
 
   useEffect(() => {
     if (vista === 'lista') setSelectedMesDay(null)
@@ -175,41 +238,57 @@ export default function AgendaPage() {
               setMonthAnchor(d => new Date(d.getFullYear(), d.getMonth() + 1, 1))
             }}
             onGoToday={() => {
-              setSelectedMesDay(null)
               const t = new Date()
               setMonthAnchor(new Date(t.getFullYear(), t.getMonth(), 1))
+              setSelectedMesDay(t.toISOString().slice(0, 10))
             }}
           />
 
-          {selectedMesDay && (
-            <section className="rounded-xl border border-violet-200 bg-white overflow-hidden shadow-sm">
-              <div className="px-4 py-2.5 border-b bg-violet-50/80 flex flex-wrap items-center justify-between gap-2">
-                <h2 className="text-sm font-semibold text-violet-950 capitalize">
-                  {tituloDiaLargo(selectedMesDay)}
+          {items.length > 0 && (
+            <div className="space-y-3">
+              <div className="flex flex-wrap items-center justify-between gap-2 px-0.5">
+                <h2 className="text-sm font-semibold text-gray-800">
+                  {selectedMesDay ? (
+                    <span className="capitalize">{tituloDiaLargo(selectedMesDay)}</span>
+                  ) : (
+                    'Detalle de pendientes'
+                  )}
                 </h2>
-                <Button type="button" variant="ghost" size="sm" className="h-8 text-xs" onClick={() => setSelectedMesDay(null)}>
-                  Cerrar
-                </Button>
-              </div>
-              <div className="p-2">
-                {itemsDiaMes.length === 0 ? (
-                  <p className="text-sm text-gray-500 px-2 py-4 text-center">No hay pendientes para este día.</p>
-                ) : (
-                  <ul className="divide-y divide-gray-100">
-                    {itemsDiaMes.map(p => (
-                      <li key={p.key}>
-                        <AgendaMesDetalleRow
-                          p={p}
-                          hoyStr={hoyStr}
-                          profile={profile ?? undefined}
-                          canEdit={canEditAgenda}
-                        />
-                      </li>
-                    ))}
-                  </ul>
+                {selectedMesDay && (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-8 text-xs"
+                    onClick={() => setSelectedMesDay(null)}
+                  >
+                    Ver todos
+                  </Button>
                 )}
               </div>
-            </section>
+
+              {selectedMesDay ? (
+                itemsDiaMes.length === 0 ? (
+                  <div className="rounded-xl border border-gray-200 bg-white px-4 py-8 text-center text-sm text-gray-500 shadow-sm">
+                    No hay pendientes para este día.
+                  </div>
+                ) : (
+                  <AgendaPendientesLista
+                    grupos={gruposDiaMes}
+                    hoyStr={hoyStr}
+                    profile={profile}
+                    canEdit={canEditAgenda}
+                  />
+                )
+              ) : (
+                <AgendaPendientesLista
+                  grupos={grupos}
+                  hoyStr={hoyStr}
+                  profile={profile}
+                  canEdit={canEditAgenda}
+                />
+              )}
+            </div>
           )}
         </div>
       )}
@@ -233,37 +312,12 @@ export default function AgendaPage() {
       )}
 
       {!loading && !error && items.length > 0 && vista === 'lista' && (
-        <div className="space-y-8">
-          {grupos.map(({ key, titulo, items: lista }) =>
-            lista.length === 0 ? null : (
-              <section key={key} className="rounded-xl border border-gray-200 bg-white overflow-hidden shadow-sm">
-                <div
-                  className={cn(
-                    'px-4 py-2.5 border-b text-sm font-semibold flex items-center justify-between',
-                    key === 'vencido' ? 'bg-red-50 text-red-900' :
-                    key === 'hoy' ? 'bg-amber-50 text-amber-900' :
-                    'bg-gray-50 text-gray-800',
-                  )}
-                >
-                  <span>{titulo}</span>
-                  <span className="text-xs font-normal text-gray-500">{lista.length}</span>
-                </div>
-                <ul className="divide-y divide-gray-100">
-                  {lista.map(p => (
-                    <li key={p.key}>
-                      <AgendaMesDetalleRow
-                        p={p}
-                        hoyStr={hoyStr}
-                        profile={profile ?? undefined}
-                        canEdit={canEditAgenda}
-                      />
-                    </li>
-                  ))}
-                </ul>
-              </section>
-            ),
-          )}
-        </div>
+        <AgendaPendientesLista
+          grupos={grupos}
+          hoyStr={hoyStr}
+          profile={profile}
+          canEdit={canEditAgenda}
+        />
       )}
     </div>
   )

@@ -16,7 +16,6 @@ function formatPrice(price: number, currency: string) {
 
 export default function ProductsPage() {
   const [products, setProducts]         = useState<Product[]>([])
-  const [stockByProduct, setStockByProduct] = useState<Record<string, { total: number; disponibles: number }>>({})
   const [loading, setLoading]           = useState(true)
   const [search, setSearch]             = useState('')
   const [typeFilter, setTypeFilter]     = useState<string>('all')
@@ -35,30 +34,7 @@ export default function ProductsPage() {
       else if (typeFilter !== 'all')   q = q.eq('type', typeFilter)
       const { data, error } = await q
       if (error) throw error
-      const list = (data ?? []) as Product[]
-      setProducts(list)
-
-      const stockIds = list
-        .filter(p => (p.type === 'product' || p.type === 'inventory') && (p.has_inventory ?? false))
-        .map(p => p.id)
-      if (stockIds.length === 0) {
-        setStockByProduct({})
-      } else {
-        const { data: invRows, error: invErr } = await supabase
-          .from('inventory_items')
-          .select('product_id, status')
-          .in('product_id', stockIds)
-        if (invErr) throw invErr
-        const map: Record<string, { total: number; disponibles: number }> = {}
-        for (const id of stockIds) map[id] = { total: 0, disponibles: 0 }
-        for (const r of invRows ?? []) {
-          const pid = (r as { product_id: string }).product_id
-          if (!map[pid]) map[pid] = { total: 0, disponibles: 0 }
-          map[pid].total++
-          if ((r as { status: string }).status === 'disponible') map[pid].disponibles++
-        }
-        setStockByProduct(map)
-      }
+      setProducts((data ?? []) as Product[])
     } catch (err) {
       console.error('Error cargando productos:', err)
     } finally {
@@ -83,10 +59,7 @@ export default function ProductsPage() {
   }
 
   async function deleteProduct(p: Product) {
-    const message = (p.has_inventory ?? false)
-      ? `¿Eliminar "${p.name}"?\n\nEsto eliminará también todos sus seriales e historial de precios.\nEsta acción no se puede deshacer.`
-      : `¿Eliminar "${p.name}"?\n\nSe eliminará también su historial de precios.\nEsta acción no se puede deshacer.`
-
+    const message = `¿Eliminar "${p.name}"?\n\nSe eliminará también su historial de precios.\nEsta acción no se puede deshacer.`
     if (!confirm(message)) return
     try {
       const { error } = await supabase.from('products').delete().eq('id', p.id)
@@ -103,7 +76,7 @@ export default function ProductsPage() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-xl font-semibold text-gray-900">Productos</h1>
-          <p className="text-sm text-gray-500">{filtered.length} productos</p>
+          <p className="text-sm text-gray-500">{filtered.length} productos · catálogo para cotizaciones</p>
         </div>
         <div className="flex flex-wrap gap-2 justify-end">
           <Button variant="outline" onClick={() => setImportOpen(true)} size="sm" className="gap-1.5">
@@ -159,7 +132,6 @@ export default function ProductsPage() {
               <th className="px-4 py-3 text-left">SKU</th>
               <th className="px-4 py-3 text-left">Tipo</th>
               <th className="px-4 py-3 text-left">Categoría</th>
-              <th className="px-4 py-3 text-right">Stock</th>
               <th className="px-4 py-3 text-right">Precio</th>
               <th className="px-4 py-3 text-center">Estado</th>
               <th className="px-4 py-3 text-right">Acciones</th>
@@ -167,9 +139,9 @@ export default function ProductsPage() {
           </thead>
           <tbody className="divide-y divide-gray-100">
             {loading ? (
-              <tr><td colSpan={8} className="px-4 py-8 text-center text-gray-400">Cargando...</td></tr>
+              <tr><td colSpan={7} className="px-4 py-8 text-center text-gray-400">Cargando...</td></tr>
             ) : filtered.length === 0 ? (
-              <tr><td colSpan={8} className="px-4 py-8 text-center text-gray-400">Sin resultados</td></tr>
+              <tr><td colSpan={7} className="px-4 py-8 text-center text-gray-400">Sin resultados</td></tr>
             ) : filtered.map(p => (
               <tr
                 key={p.id}
@@ -182,7 +154,7 @@ export default function ProductsPage() {
                   {p.type === 'product' || p.type === 'inventory' ? (
                     <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-700">
                       <Package size={11} />
-                      {(p.has_inventory ?? false) ? 'Producto · Stock' : 'Producto · Sin stock'}
+                      Producto
                     </span>
                   ) : (
                     <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-700">
@@ -192,16 +164,6 @@ export default function ProductsPage() {
                   )}
                 </td>
                 <td className="px-4 py-3 text-gray-500">{p.service_category ?? '—'}</td>
-                <td className="px-4 py-3 text-right tabular-nums text-gray-700">
-                  {(p.type === 'product' || p.type === 'inventory') && (p.has_inventory ?? false) ? (
-                    <span title="Total (disponibles)">
-                      {stockByProduct[p.id]?.total ?? 0}
-                      <span className="text-gray-500 font-normal"> ({stockByProduct[p.id]?.disponibles ?? 0})</span>
-                    </span>
-                  ) : (
-                    <span className="text-gray-300">—</span>
-                  )}
-                </td>
                 <td className="px-4 py-3 text-right font-medium">{formatPrice(p.price, p.currency)}</td>
                 <td className="px-4 py-3 text-center">
                   <Badge variant={p.is_active ? 'default' : 'secondary'}>

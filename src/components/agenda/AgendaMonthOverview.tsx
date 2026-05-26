@@ -141,11 +141,11 @@ export default function AgendaMonthOverview({
           const hasHighFollowup = st?.hasHighFollowup ?? false
           const vencido = c.dateStr < hoyStr && n > 0
           const selected = selectedDayStr === c.dateStr
-          const interactive = n > 0
           const dayNum = Number.parseInt(c.dateStr.slice(8, 10), 10)
 
           const rowClass = cn(
             'w-full flex items-center justify-between gap-0.5 rounded-sm px-1 py-0.5 min-h-[1.65rem] text-left leading-none',
+            'cursor-pointer hover:bg-gray-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-500 focus-visible:ring-offset-0',
             !c.inMonth && 'opacity-55',
             c.isToday && !selected && 'bg-violet-50/80 ring-1 ring-inset ring-violet-300/70',
             selected && 'bg-violet-100 ring-2 ring-inset ring-violet-600',
@@ -154,34 +154,35 @@ export default function AgendaMonthOverview({
             vencido && n > 0 && !selected && 'ring-1 ring-amber-200/90',
           )
 
-          if (interactive && st) {
-            return (
-              <button
-                key={c.dateStr}
-                type="button"
-                className={cn(
-                  rowClass,
-                  'cursor-pointer hover:bg-gray-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-500 focus-visible:ring-offset-0',
-                )}
-                aria-pressed={selected}
-                aria-label={
-                  hasHighFollowup
-                    ? `${n} pendientes el ${c.dateStr}; incluye seguimiento marcado como importancia alta.`
+          return (
+            <button
+              key={c.dateStr}
+              type="button"
+              className={rowClass}
+              aria-pressed={selected}
+              aria-label={
+                n === 0
+                  ? `Día ${c.dateStr}, sin pendientes. Pulse para filtrar el listado.`
+                  : hasHighFollowup
+                    ? `${n} pendientes el ${c.dateStr}; incluye seguimiento de importancia alta.`
                     : hasUrgent
-                      ? `${n} pendientes el ${c.dateStr}, incluye seguimientos y puede incluir tarea urgente. Ver listado.`
-                      : `${n} pendientes el ${c.dateStr}. Ver listado.`
-                }
-                onClick={() => onSelectDay(selected ? null : c.dateStr)}
+                      ? `${n} pendientes el ${c.dateStr}, puede incluir tarea urgente.`
+                      : `${n} pendientes el ${c.dateStr}.`
+              }
+              onClick={() => onSelectDay(selected ? null : c.dateStr)}
+            >
+              <span
+                className={cn(
+                  'tabular-nums text-[11px] font-semibold shrink-0 w-4 text-center',
+                  selected && 'text-violet-900',
+                  !selected && c.inMonth && !hasHighFollowup && 'text-gray-800',
+                  !selected && !c.inMonth && 'text-gray-500',
+                  !selected && hasHighFollowup && c.inMonth && 'font-bold text-red-700',
+                )}
               >
-                <span
-                  className={cn(
-                    'tabular-nums text-[11px] font-semibold shrink-0 w-4 text-center',
-                    c.inMonth && !hasHighFollowup ? 'text-gray-800' : !c.inMonth ? 'text-gray-500' : 'text-red-700',
-                    hasHighFollowup && c.inMonth && 'font-bold',
-                  )}
-                >
-                  {dayNum}
-                </span>
+                {dayNum}
+              </span>
+              {n > 0 && st ? (
                 <div
                   className={cn(
                     'flex flex-wrap justify-end gap-0.5 flex-1 min-w-0',
@@ -197,22 +198,10 @@ export default function AgendaMonthOverview({
                     className={hasUrgent ? 'bg-red-100 text-red-800' : 'bg-violet-100 text-violet-900'}
                   />
                 </div>
-              </button>
-            )
-          }
-
-          return (
-            <div key={c.dateStr} className={rowClass}>
-              <span
-                className={cn(
-                  'tabular-nums text-[11px] font-semibold w-4 text-center',
-                  c.inMonth ? 'text-gray-700' : 'text-gray-400',
-                )}
-              >
-                {dayNum}
-              </span>
-              <span className="w-5 shrink-0" aria-hidden />
-            </div>
+              ) : (
+                <span className="w-5 shrink-0" aria-hidden />
+              )}
+            </button>
           )
         })}
       </div>
@@ -221,8 +210,7 @@ export default function AgendaMonthOverview({
         <span className="text-blue-700 font-medium">azul</span> (llamados),{' '}
         <span className="text-green-700 font-medium">verde</span> (cotización),{' '}
         <span className="text-red-800 font-medium">rojo</span> (factura),{' '}
-        <span className="text-violet-800 font-medium">violeta</span> (cierre estimado / tareas CRM). Marco rojo: tarea CRM urgente o día con seguimiento de importancia alta.
-        Pulse el día con pendientes para ver el detalle abajo.
+        <span className="text-violet-800 font-medium">violeta</span> (cierre estimado / tareas CRM).         Marco rojo: tarea CRM urgente o día con seguimiento de importancia alta. Pulse un día para filtrar el detalle abajo; pulse de nuevo para ver todos los pendientes.
       </p>
     </div>
   )

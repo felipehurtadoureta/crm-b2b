@@ -5,7 +5,11 @@
 import { supabase } from '@/lib/supabase'
 import { TASK_PRIORITY_LABEL, TASK_STATUS_LABEL } from '@/lib/crmV2Display'
 import type { CrmTaskPriority, QuoteStage, CommercialFollowupSubject, CommercialFollowupImportance } from '@/types'
-import { fetchOpenCommercialRemindersInRange } from '@/lib/commercialFollowupsQuery'
+import {
+  buildFollowupAgendaTitulo,
+  fetchOpenCommercialRemindersInRange,
+  normalizeNextChannel,
+} from '@/lib/commercialFollowupsQuery'
 
 export type PendienteFuente = 'quote_close' | 'crm_task' | 'followup'
 
@@ -187,25 +191,32 @@ export async function fetchPendientes(opts: FetchPendientesOpts): Promise<Pendie
     })
     seguimientos = reminderRows.map(r => {
       const fecha = toDay(r.due_date) ?? hoyStr
-      const sf = firstEmbedded<{ body?: string | null }>((r as { source_followup?: unknown }).source_followup)
+      const sf = firstEmbedded<{ body?: string | null; next_follow_up_kind?: string | null }>(
+        (r as { source_followup?: unknown }).source_followup,
+      )
       const cuerpoSeguimiento =
         sf?.body != null && String(sf.body).trim() ? String(sf.body).trim() : null
 
+      const channel =
+        normalizeNextChannel(r.next_follow_up_kind) ??
+        normalizeNextChannel(sf?.next_follow_up_kind) ??
+        'llamado'
+
       const companyEmbed = firstEmbedded<{ name?: string | null }>(r.company)
       const empresa = companyEmbed?.name?.trim() ? String(companyEmbed.name) : 'Empresa'
-      let titulo = 'Seguimiento · Llamados'
       let subtitulo = empresa
       let quoteKamId: string | undefined
+      let titulo = buildFollowupAgendaTitulo(channel, 'company')
       if (r.subject_type === 'quote') {
         const q = firstEmbedded<{ quote_number?: string | null; title?: string | null; kam_id?: string | null }>(r.quote)
         const qn = q?.quote_number != null ? String(q.quote_number) : ''
-        titulo = `Seguimiento · Cotización${qn ? ` ${qn}` : ''}`.trim()
+        titulo = buildFollowupAgendaTitulo(channel, 'quote', { quoteNumber: qn })
         subtitulo = q?.title?.trim() ? String(q.title) : empresa
         quoteKamId = q?.kam_id ?? undefined
       } else if (r.subject_type === 'invoice') {
         const inv = firstEmbedded<{ invoice_number?: string; title?: string | null }>(r.invoice)
         const inn = inv?.invoice_number != null ? String(inv.invoice_number) : ''
-        titulo = `Seguimiento · Factura${inn ? ` ${inn}` : ''}`.trim()
+        titulo = buildFollowupAgendaTitulo(channel, 'invoice', { invoiceNumber: inn })
         subtitulo = inv?.title?.trim() ? String(inv.title) : empresa
       }
       return {

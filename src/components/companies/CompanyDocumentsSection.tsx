@@ -1,38 +1,34 @@
 // Gestor de documentos de empresa: tabla `company_documents` + bucket Storage `company-documents`.
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { supabase } from '@/lib/supabase'
 import { cfInvoicesQueryKey } from '@/hooks/useCommercialFollowups'
 import { companyDocumentsQueryOptions } from '@/lib/companyDocumentsQuery'
 import { fetchInvoicesByCompany } from '@/lib/commercialFollowupsQuery'
+import CompanyDocumentUploadZone from '@/components/documents/CompanyDocumentUploadZone'
 import {
   COMPANY_DOCUMENTS_BUCKET,
-  COMPANY_DOCUMENT_ACCEPT_INPUT,
-  MAX_COMPANY_DOCUMENT_BYTES,
   uploadCompanyDocumentFiles,
 } from '@/lib/companyDocumentsUpload'
+import { COMPANY_DOCUMENT_CATEGORY_LABEL } from '@/lib/companyDocumentsQuery'
+import {
+  resolveCompanyDocumentUploadTargets,
+  type UploadDocumentTarget,
+} from '@/lib/resolveCompanyDocumentUploadTargets'
 import type { CompanyDocument, CompanyDocumentCategory } from '@/types'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { cn } from '@/lib/utils'
 import type { CommercialFollowupsDocumentSync } from '@/components/companies/CompanyCommercialFollowupsSection'
-import { FileText, Trash2, Download, Upload, FolderOpen, Search } from 'lucide-react'
+import { FileText, Trash2, Download, FolderOpen, Search } from 'lucide-react'
 
 /** Estado enviado desde seguimiento comercial (ficha empresa) para alinear destino/cotización/factura. */
 export type FollowupDocumentSyncState = CommercialFollowupsDocumentSync & { revision: number }
 
-const CATEGORY_LABEL: Record<CompanyDocumentCategory, string> = {
-  contrato: 'Contrato',
-  orden_compra: 'Orden de compra',
-  factura: 'Factura',
-  otro: 'Otro',
-}
-
 const FILTER_ALL = 'todos' as const
 type CategoryFilter = typeof FILTER_ALL | CompanyDocumentCategory
 
-/** Destino indicado antes de subir archivos generales vs asociados. */
-export type UploadDocumentTarget = 'general' | 'quote' | 'invoice'
+export type { UploadDocumentTarget }
 
 interface Props {
   companyId: string
@@ -55,8 +51,6 @@ export default function CompanyDocumentsSection({
   followupDocumentSync = null,
 }: Props) {
   const queryClient = useQueryClient()
-  const fileInputRef = useRef<HTMLInputElement>(null)
-  const dragDepth = useRef(0)
 
   const [defaultCategory, setDefaultCategory] = useState<CompanyDocumentCategory>('contrato')
   const [uploadDestino, setUploadDestino] = useState<UploadDocumentTarget>('general')
@@ -64,7 +58,6 @@ export default function CompanyDocumentsSection({
   const [uploadInvoiceId, setUploadInvoiceId] = useState('')
   const [filterCategory, setFilterCategory] = useState<CategoryFilter>(FILTER_ALL)
   const [search, setSearch] = useState('')
-  const [dragActive, setDragActive] = useState(false)
   const [notice, setNotice] = useState<{ type: 'ok' | 'warn'; text: string } | null>(null)
 
   const docsQuery = useQuery(companyDocumentsQueryOptions(companyId))
@@ -180,7 +173,7 @@ export default function CompanyDocumentsSection({
     (doc: CompanyDocument) => {
       if (!doc.invoice_id) return ''
       const inv = facturasLista.find(x => x.id === doc.invoice_id)
-      if (inv) return `${inv.invoice_number}${inv.title ? ` — ${inv.title}` : ''}`
+      if (inv) return inv.invoice_number
       return doc.invoice_id
     },
     [facturasLista],
@@ -206,37 +199,27 @@ export default function CompanyDocumentsSection({
   }, [rows, filterCategory, search, quoteLabel, invoiceLabel])
 
   const runUpload = useCallback(
-    (fileList: FileList | File[]) => {
-      const files = Array.from(fileList as Iterable<File>)
+    (files: File[]) => {
       if (files.length === 0) return
-      let qid: string | null = null
-      let iid: string | null = null
-      if (uploadDestino === 'quote') {
-        qid = uploadQuoteId.trim() || null
-        if (!qid) {
-          setNotice({ type: 'warn', text: 'Elija una cotización o cambie el destino a «Documentos generales».' })
-          window.setTimeout(() => setNotice(null), 6000)
-          return
-        }
-      } else if (uploadDestino === 'invoice') {
-        iid = uploadInvoiceId.trim() || null
-        if (!iid) {
-          setNotice({ type: 'warn', text: 'Elija una factura o cambie el destino a «Documentos generales».' })
-          window.setTimeout(() => setNotice(null), 6000)
-          return
-        }
+      const resolved = resolveCompanyDocumentUploadTargets({
+        destino: uploadDestino,
+        quoteId: uploadQuoteId,
+        invoiceId: uploadInvoiceId,
+        invoices: facturasLista,
+      })
+      if (resolved.error) {
+        setNotice({ type: 'warn', text: resolved.error })
+        window.setTimeout(() => setNotice(null), 6000)
+        return
       }
-      uploadMutation.mutate({ files, quoteId: qid, invoiceId: iid })
+      uploadMutation.mutate({
+        files,
+        quoteId: resolved.quoteId,
+        invoiceId: resolved.invoiceId,
+      })
     },
-    [uploadMutation, uploadDestino, uploadQuoteId, uploadInvoiceId],
+    [uploadMutation, uploadDestino, uploadQuoteId, uploadInvoiceId, facturasLista],
   )
-
-  const onFileInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const list = e.target.files
-    e.target.value = ''
-    if (!list?.length || !canEdit) return
-    runUpload(list)
-  }
 
   const onDownload = async (doc: CompanyDocument) => {
     const { data, error: sErr } = await supabase.storage.from(COMPANY_DOCUMENTS_BUCKET).createSignedUrl(doc.storage_path, 3600)
@@ -253,41 +236,6 @@ export default function CompanyDocumentsSection({
     deleteMutation.mutate(doc, {
       onError: (e: Error) => setNotice({ type: 'warn', text: e.message }),
     })
-  }
-
-  const handleDragEnter = (e: React.DragEvent) => {
-    e.preventDefault()
-    e.stopPropagation()
-    if (!canEdit || uploadMutation.isPending) return
-    dragDepth.current += 1
-    if (e.dataTransfer.types.includes('Files')) setDragActive(true)
-  }
-
-  const handleDragLeave = (e: React.DragEvent) => {
-    e.preventDefault()
-    e.stopPropagation()
-    if (!canEdit) return
-    dragDepth.current -= 1
-    if (dragDepth.current <= 0) {
-      dragDepth.current = 0
-      setDragActive(false)
-    }
-  }
-
-  const handleDragOver = (e: React.DragEvent) => {
-    e.preventDefault()
-    e.stopPropagation()
-    if (canEdit && e.dataTransfer.types.includes('Files')) e.dataTransfer.dropEffect = 'copy'
-  }
-
-  const handleDrop = (e: React.DragEvent) => {
-    e.preventDefault()
-    e.stopPropagation()
-    dragDepth.current = 0
-    setDragActive(false)
-    if (!canEdit || uploadMutation.isPending) return
-    const dt = e.dataTransfer.files
-    if (dt?.length) runUpload(dt)
   }
 
   const errMsg = docsQuery.error instanceof Error ? docsQuery.error.message : null
@@ -313,27 +261,12 @@ export default function CompanyDocumentsSection({
       </div>
 
       {canEdit && (
-        <div
-          className={cn(
-            'rounded-lg border-2 border-dashed transition-colors',
-            'mx-3 mt-2 mb-0 px-3 py-2 flex flex-col gap-1.5 text-left min-w-0',
-            dragActive ? 'border-blue-500 bg-blue-50/90' : 'border-gray-200 bg-gray-50/80',
-            uploadMutation.isPending && 'pointer-events-none opacity-70',
-          )}
-          onDragEnter={handleDragEnter}
-          onDragLeave={handleDragLeave}
-          onDragOver={handleDragOver}
-          onDrop={handleDrop}
-        >
-          <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-gray-600">
-            <Upload className={cn('text-gray-400 shrink-0', compact ? 'h-3.5 w-3.5' : 'h-4 w-4')} aria-hidden />
-            <span className="font-medium text-gray-800">{dragActive ? 'Suelte aquí para cargar' : 'Arrastre aquí o use el botón'}</span>
-            <span className="hidden sm:inline text-gray-300">·</span>
-            <span className="text-[10px] text-gray-500 shrink-0">
-              Máx. {MAX_COMPANY_DOCUMENT_BYTES / (1024 * 1024)} MB c/u · PDF, Office, imágenes, TXT/CSV
-            </span>
-          </div>
-
+        <CompanyDocumentUploadZone
+          className="mx-3 mt-2 mb-0 px-3 py-2"
+          density={compact ? 'compact' : 'default'}
+          isUploading={uploadMutation.isPending}
+          onFiles={runUpload}
+          controls={
           <div className="flex flex-nowrap items-center gap-2 overflow-x-auto pb-0.5 min-w-0 [scrollbar-width:thin]">
             <label className="flex items-center gap-1 shrink-0">
               <span className="text-[10px] text-gray-500 whitespace-nowrap">Destino</span>
@@ -380,7 +313,6 @@ export default function CompanyDocumentsSection({
                   {facturasLista.map(inv => (
                     <option key={inv.id} value={inv.id}>
                       {inv.invoice_number}
-                      {inv.title ? ` — ${inv.title}` : ''}
                     </option>
                   ))}
                 </select>
@@ -394,35 +326,16 @@ export default function CompanyDocumentsSection({
                 className="text-xs border rounded-md px-2 py-1 bg-white text-gray-800 min-w-[5.75rem]"
                 title="Categoría por defecto al subir"
               >
-                {(Object.keys(CATEGORY_LABEL) as CompanyDocumentCategory[]).map(k => (
+                {(Object.keys(COMPANY_DOCUMENT_CATEGORY_LABEL) as CompanyDocumentCategory[]).map(k => (
                   <option key={k} value={k}>
-                    {CATEGORY_LABEL[k]}
+                    {COMPANY_DOCUMENT_CATEGORY_LABEL[k]}
                   </option>
                 ))}
               </select>
             </label>
-            <input
-              ref={fileInputRef}
-              type="file"
-              className="hidden"
-              accept={COMPANY_DOCUMENT_ACCEPT_INPUT}
-              multiple
-              disabled={uploadMutation.isPending}
-              onChange={onFileInputChange}
-            />
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              className="text-xs gap-1.5 shrink-0 h-7 px-2"
-              disabled={uploadMutation.isPending}
-              onClick={() => fileInputRef.current?.click()}
-            >
-              <Upload size={13} />
-              {uploadMutation.isPending ? 'Subiendo…' : 'Archivos'}
-            </Button>
           </div>
-        </div>
+          }
+        />
       )}
 
       <div className={cn('p-3 space-y-3', !compact && 'sm:space-y-3.5')}>
@@ -459,9 +372,9 @@ export default function CompanyDocumentsSection({
               className="text-xs border rounded-md px-2 py-1.5 bg-white text-gray-800"
             >
               <option value={FILTER_ALL}>Todas las categorías</option>
-              {(Object.keys(CATEGORY_LABEL) as CompanyDocumentCategory[]).map(k => (
+              {(Object.keys(COMPANY_DOCUMENT_CATEGORY_LABEL) as CompanyDocumentCategory[]).map(k => (
                 <option key={k} value={k}>
-                  {CATEGORY_LABEL[k]}
+                  {COMPANY_DOCUMENT_CATEGORY_LABEL[k]}
                 </option>
               ))}
             </select>
@@ -526,7 +439,7 @@ export default function CompanyDocumentsSection({
                         </div>
                       </td>
                       <td className="px-3 py-2.5 align-top text-gray-700 text-xs whitespace-nowrap">
-                        {CATEGORY_LABEL[doc.category]}
+                        {COMPANY_DOCUMENT_CATEGORY_LABEL[doc.category]}
                       </td>
                       {showQuoteColumn && (
                         <td className="px-3 py-2.5 align-top text-gray-600 text-xs max-w-[12rem]">

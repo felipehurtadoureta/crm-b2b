@@ -4,7 +4,11 @@ import { useCallback, useEffect, useState } from 'react'
 import { getSupabaseDashboardAuthUsersUrl, supabase } from '@/lib/supabase'
 import type { Profile, Role } from '@/types'
 import { useAuth } from '@/hooks/useAuth'
-import { Navigate } from 'react-router-dom'
+import { Link, Navigate, useLocation } from 'react-router-dom'
+import AdminOrganizationPage from './AdminOrganizationPage'
+import AdminImportPage from './AdminImportPage'
+import { adminTabFromPath, type AdminSettingsTab } from '@/lib/permissions'
+import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -23,6 +27,34 @@ import { initialsFromFullName, kamAbbrOrInitials } from '@/lib/kamDisplay'
 const ROLES: Role[] = ['super_admin', 'kam', 'reader']
 /** Roles que se pueden asignar al invitar (no se crean super_admin desde la UI). */
 const INVITE_ROLES: Exclude<Role, 'super_admin'>[] = ['kam', 'reader']
+
+function AdminSettingsHeader({
+  tab,
+  settingsTabClass,
+}: {
+  tab: AdminSettingsTab
+  settingsTabClass: (id: AdminSettingsTab) => string
+}) {
+  return (
+    <div className="space-y-3">
+      <div>
+        <h1 className="text-2xl font-semibold text-gray-900">Administración</h1>
+        <p className="text-sm text-gray-500 mt-1">Usuarios, marca de la organización e importación masiva.</p>
+      </div>
+      <nav className="flex flex-wrap gap-1 border-b border-gray-200">
+        <Link to="/admin/users" className={settingsTabClass('users')}>
+          Usuarios
+        </Link>
+        <Link to="/admin/users?tab=organization" className={settingsTabClass('organization')}>
+          Organización
+        </Link>
+        <Link to="/admin/users?tab=import" className={settingsTabClass('import')}>
+          Importar Excel
+        </Link>
+      </nav>
+    </div>
+  )
+}
 
 type Draft = {
   full_name: string
@@ -241,10 +273,38 @@ export default function AdminUsersPage() {
     return <Navigate to="/" replace />
   }
 
+  const location = useLocation()
+  const tab: AdminSettingsTab = adminTabFromPath(location.pathname, location.search)
+
+  const settingsTabClass = (id: AdminSettingsTab) =>
+    cn(
+      'px-3 py-2 text-sm font-medium border-b-2 -mb-px transition-colors',
+      tab === id ? 'border-violet-600 text-violet-800' : 'border-transparent text-gray-500 hover:text-gray-800',
+    )
+
+  if (tab === 'organization') {
+    return (
+      <div className="max-w-5xl space-y-6">
+        <AdminSettingsHeader tab={tab} settingsTabClass={settingsTabClass} />
+        <AdminOrganizationPage embedded />
+      </div>
+    )
+  }
+
+  if (tab === 'import') {
+    return (
+      <div className="max-w-5xl space-y-6">
+        <AdminSettingsHeader tab={tab} settingsTabClass={settingsTabClass} />
+        <AdminImportPage embedded />
+      </div>
+    )
+  }
+
   return (
     <div className="max-w-5xl space-y-6">
+      <AdminSettingsHeader tab={tab} settingsTabClass={settingsTabClass} />
       <div>
-        <h1 className="text-2xl font-semibold text-gray-900">Usuarios</h1>
+        <h2 className="text-lg font-semibold text-gray-900">Usuarios del CRM</h2>
         <p className="text-sm text-gray-500 mt-1 max-w-2xl">
           Aquí se lee y se actualiza la tabla <span className="font-mono">profiles</span> en Supabase (nombre, correo
           mostrado en el CRM, teléfono, si está activo y rol). Para que el guardado funcione, en Supabase tienes que

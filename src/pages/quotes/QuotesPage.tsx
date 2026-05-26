@@ -2,10 +2,6 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { useLocation, useNavigate, useSearchParams, Link } from 'react-router-dom'
 import { supabase } from '@/lib/supabase'
-import {
-  releaseReservationsForQuote,
-  syncQuoteInventoryForStage,
-} from '@/lib/quoteInventoryReservation'
 import { useAuth } from '@/hooks/useAuth'
 import type { Company, Contact, Profile, Product, Quote, QuoteStage } from '@/types'
 import { normalizeQuoteStage } from '@/types'
@@ -21,6 +17,10 @@ import {
 } from '@/components/ui/table'
 import { Plus, Pencil, Trash2, LayoutGrid, List, DollarSign, Calendar, User } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import {
+  invalidateQuoteFollowupAgendaQueries,
+  syncQuoteFollowupRemindersForStage,
+} from '@/lib/commercialFollowupsQuery'
 
 interface QuoteRow extends Quote {
   company?: { id: string; name: string }
@@ -234,6 +234,7 @@ export default function QuotesPage({ initialStage }: { initialStage?: QuoteStage
     }
     setQuotes(prev => prev.map(x => x.id === id ? { ...x, stage: newStage } : x))
     const closed = ['aceptada', 'rechazada', 'facturada'].includes(newStage)
+    const prevStage = q.stage
     const { error } = await supabase.from('quotes').update({
       stage: newStage,
       closed_at: closed && !q.closed_at ? new Date().toISOString() : (!closed ? null : q.closed_at),
@@ -241,11 +242,12 @@ export default function QuotesPage({ initialStage }: { initialStage?: QuoteStage
     if (error) {
       setQuotes(prev => prev.map(x => x.id === id ? { ...x, stage: q.stage } : x))
     } else {
-      const { messages } = await syncQuoteInventoryForStage(id, newStage, q.stage)
-      if (messages.length) {
-        console.info('[cotización → inventario]', messages.join('\n'))
+      try {
+        await syncQuoteFollowupRemindersForStage(id, prevStage, newStage)
+      } catch (syncErr) {
+        console.warn('[quotes] sync followup reminders', syncErr)
       }
-      void queryClient.invalidateQueries({ queryKey: ['inventory-disponibles-cotizacion'] })
+      invalidateQuoteFollowupAgendaQueries(queryClient)
       void queryClient.invalidateQueries({ queryKey: ['fabricacion-pendiente-cotizaciones'] })
     }
   }
@@ -253,7 +255,6 @@ export default function QuotesPage({ initialStage }: { initialStage?: QuoteStage
   const handleDelete = async () => {
     if (!deleteId) return
     setDeleting(true)
-    await releaseReservationsForQuote(deleteId)
     await supabase.from('quote_items').delete().eq('quote_id', deleteId)
     await supabase.from('quotes').delete().eq('id', deleteId)
     setDeleteId(null); setDeleting(false)
@@ -528,7 +529,11 @@ export default function QuotesPage({ initialStage }: { initialStage?: QuoteStage
         initialCompanyId={initialCompanyId}
         initialContactId={initialContactId}
         initialCallId={initialCallId}
-        onSaved={() => { setDialogOpen(false); loadQuotes() }}
+        onSaved={() => {
+          setDialogOpen(false)
+          loadQuotes()
+          invalidateQuoteFollowupAgendaQueries(queryClient)
+        }}
       />
 
       {invoiceKanban && (
@@ -543,6 +548,7 @@ export default function QuotesPage({ initialStage }: { initialStage?: QuoteStage
           onCompleted={() => {
             setInvoiceKanban(null)
             void loadQuotes()
+            invalidateQuoteFollowupAgendaQueries(queryClient)
           }}
         />
       )}

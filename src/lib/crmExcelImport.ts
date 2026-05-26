@@ -328,7 +328,8 @@ export function parseProductRows(rows: Record<string, unknown>[]): ExcelProductD
 
     const is_active = parseBool(activeRaw, true)
 
-    const hasInvFinal = productType === 'service' ? false : has_inventory
+    /** Catálogo desacoplado del inventario: no marcar stock propio al importar. */
+    const hasInvFinal = false
 
     /** `service_category` en BD solo tiene sentido en servicios según UI del catálogo. */
     const service_category = productType === 'service' && rubroServicio !== '' ? rubroServicio : null

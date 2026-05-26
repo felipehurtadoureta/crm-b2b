@@ -3,9 +3,48 @@
  */
 import { supabase } from '@/lib/supabase'
 import { uploadCompanyDocumentFiles } from '@/lib/companyDocumentsUpload'
-import { insertInvoice } from '@/lib/commercialFollowupsQuery'
+import { insertInvoice, syncQuoteFollowupRemindersForStage } from '@/lib/commercialFollowupsQuery'
 import { productTracksSerialStock } from '@/lib/productInventoryRules'
 import type { InvoiceStatus, Product } from '@/types'
+
+function isQuotesStageCheckError(message: string | undefined): boolean {
+  if (!message) return false
+  const m = message.toLowerCase()
+  return m.includes('quotes_stage_check') || (m.includes('check constraint') && m.includes('stage'))
+}
+
+async function fetchQuoteStage(quoteId: string): Promise<string> {
+  const { data, error } = await supabase.from('quotes').select('stage').eq('id', quoteId).single()
+  if (error) throw new Error(error.message)
+  return (data?.stage as string | undefined) ?? 'borrador'
+}
+
+/**
+ * Cierra la cotización como facturada.
+ * Si el CHECK de Postgres aún no incluye `facturada`, usa `orden_de_venta` (legacy).
+ */
+export async function markQuoteAsInvoiced(quoteId: string): Promise<'facturada' | 'orden_de_venta'> {
+  const closedAt = new Date().toISOString()
+  const { error: e1 } = await supabase
+    .from('quotes')
+    .update({ stage: 'facturada', closed_at: closedAt })
+    .eq('id', quoteId)
+  if (!e1) return 'facturada'
+  if (!isQuotesStageCheckError(e1.message)) throw new Error(e1.message)
+
+  const { error: e2 } = await supabase
+    .from('quotes')
+    .update({ stage: 'orden_de_venta', closed_at: closedAt })
+    .eq('id', quoteId)
+  if (e2) throw new Error(e2.message)
+  return 'orden_de_venta'
+}
+
+async function finalizeQuoteAfterInvoicing(quoteId: string): Promise<void> {
+  const prevStage = await fetchQuoteStage(quoteId)
+  const newStage = await markQuoteAsInvoiced(quoteId)
+  await syncQuoteFollowupRemindersForStage(quoteId, prevStage, newStage)
+}
 
 export interface InvoiceStockLineInput {
   quoteItemId: string
@@ -23,6 +62,9 @@ export interface CompleteQuoteInvoicingInput {
   quoteCurrency: string
   pdfFile: File
   stockLines: InvoiceStockLineInput[]
+  /** Glosa / descripción en factura (columna `title`) */
+  glosa?: string | null
+  notes?: string | null
 }
 
 export type QuoteStockLineForInvoicing = {
@@ -159,10 +201,26 @@ export async function completeQuoteInvoicing(input: CompleteQuoteInvoicingInput)
     quoteCurrency,
     pdfFile,
     stockLines,
+    glosa,
+    notes,
   } = input
 
   const trimmedNumber = invoiceNumber.trim()
   if (!trimmedNumber) throw new Error('Ingrese el número de factura del SII.')
+
+  const existingInv = await fetchInvoiceForQuote(quoteId)
+  if (existingInv) {
+    try {
+      await finalizeQuoteAfterInvoicing(quoteId)
+    } catch (stageErr) {
+      throw new Error(
+        `Ya existe una factura para esta cotización, pero no se pudo actualizar su etapa. ` +
+          `Ejecute supabase/sql/quotes_stage_facturada_check.sql en Supabase. ` +
+          `${(stageErr as Error).message}`,
+      )
+    }
+    return { invoiceId: existingInv.id as string }
+  }
 
   const lines = await fetchQuoteStockLinesForInvoicing(quoteId)
   const allSelectedIds = new Set(stockLines.flatMap(s => s.inventoryItemIds))
@@ -191,7 +249,7 @@ export async function completeQuoteInvoicing(input: CompleteQuoteInvoicingInput)
     company_id: companyId,
     quote_id: quoteId,
     invoice_number: trimmedNumber,
-    title: null,
+    title: glosa?.trim() || null,
     status: invoiceStatus,
     total: quoteTotal,
     currency: quoteCurrency,
@@ -199,7 +257,11 @@ export async function completeQuoteInvoicing(input: CompleteQuoteInvoicingInput)
 
   const { error: valErr } = await supabase
     .from('invoices')
-    .update({ sii_validated_at: new Date().toISOString(), paid_at: paidAt })
+    .update({
+      sii_validated_at: new Date().toISOString(),
+      paid_at: paidAt,
+      notes: notes?.trim() || null,
+    })
     .eq('id', invoice.id)
   if (valErr) throw new Error(valErr.message)
 
@@ -207,7 +269,7 @@ export async function completeQuoteInvoicing(input: CompleteQuoteInvoicingInput)
     [pdfFile],
     companyId,
     'factura',
-    null,
+    quoteId,
     invoice.id,
   )
   if (upload.uploaded === 0) {
@@ -250,11 +312,16 @@ export async function completeQuoteInvoicing(input: CompleteQuoteInvoicingInput)
     await supabase.from('inventory_items').update({ status: 'disponible' }).in('id', releaseIds)
   }
 
-  const { error: qErr } = await supabase
-    .from('quotes')
-    .update({ stage: 'facturada', closed_at: new Date().toISOString() })
-    .eq('id', quoteId)
-  if (qErr) throw new Error(qErr.message)
+  try {
+    await finalizeQuoteAfterInvoicing(quoteId)
+  } catch (stageErr) {
+    throw new Error(
+      `La factura y el PDF se guardaron, pero no se pudo marcar la cotización como facturada. ` +
+        `Ejecute supabase/sql/quotes_stage_facturada_check.sql en Supabase y pulse de nuevo «Validar y facturar» ` +
+        `para completar la etapa (no se duplicará la factura). ` +
+        `${(stageErr as Error).message}`,
+    )
+  }
 
   return { invoiceId: invoice.id }
 }

@@ -10,12 +10,17 @@ import {
   bucketPendiente,
   type PendienteItem,
 } from '@/lib/agendaPendientes'
-import { syncQuoteInventoryForStage } from '@/lib/quoteInventoryReservation'
 import { fmtCompactDate } from '@/lib/crmV2Display'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
-import { cfInvoicesQueryKey, markInvoiceAsPaid, updateCommercialReminderDueDate } from '@/hooks/useCommercialFollowups'
-import type { Profile, QuoteStage } from '@/types'
+import {
+  cfInvoicesQueryKey,
+  markInvoiceAsPaid,
+  syncQuoteFollowupRemindersForStage,
+  updateCommercialReminderDueDate,
+  invalidateQuoteFollowupAgendaQueries,
+} from '@/hooks/useCommercialFollowups'
+import { normalizeQuoteStage, type Profile, type QuoteStage } from '@/types'
 
 const FUENTE_LABEL: Record<PendienteItem['fuente'], string> = {
   quote_close: 'Cierre cotización',
@@ -57,7 +62,9 @@ function etiquetaEnlaceCotizacion(p: PendienteItem): string {
     return parte || 'Cotización'
   }
   if (p.fuente === 'followup' && p.followupSubject === 'quote') {
-    const m = p.titulo.match(/Seguimiento · Cotización\s*(.*)$/i)
+    const m =
+      p.titulo.match(/(?:Reunión|Mail|Llamado) · Seguimiento · Cotización\s*(.*)$/i) ??
+      p.titulo.match(/Seguimiento · Cotización\s*(.*)$/i)
     const num = m?.[1]?.trim()
     return num ? `Cot. ${num}` : 'Cotización'
   }
@@ -155,7 +162,7 @@ export default function AgendaMesDetalleRow({ p, hoyStr, profile, canEdit }: Age
         .eq('id', p.quoteId!)
         .single()
       if (fe) throw new Error(fe.message)
-      const prevStage = (antes?.stage as QuoteStage | undefined) ?? undefined
+      const prevStage = normalizeQuoteStage((antes?.stage as string | undefined) ?? 'borrador')
 
       const closed = ['aceptada', 'rechazada', 'facturada'].includes(stage)
       const { error } = await supabase
@@ -167,12 +174,10 @@ export default function AgendaMesDetalleRow({ p, hoyStr, profile, canEdit }: Age
         .eq('id', p.quoteId!)
       if (error) throw new Error(error.message)
 
-      const { messages } = await syncQuoteInventoryForStage(p.quoteId!, stage, prevStage)
-      if (messages.length) console.info('[agenda cotización inventario]', messages.join('\n'))
+      await syncQuoteFollowupRemindersForStage(p.quoteId!, prevStage, stage)
     },
     onSuccess: () => {
-      invalidarAgenda()
-      void qc.invalidateQueries({ queryKey: ['inventory-disponibles-cotizacion'] })
+      invalidateQuoteFollowupAgendaQueries(qc)
       void qc.invalidateQueries({ queryKey: ['fabricacion-pendiente-cotizaciones'] })
     },
   })

@@ -199,6 +199,9 @@ export type CommercialFollowupSubject = 'company' | 'quote' | 'invoice'
 
 export type CommercialFollowupImportance = 'baja' | 'media' | 'alta'
 
+/** Medio del próximo contacto programado en agenda (Reunión, Mail, Llamado). */
+export type CommercialFollowupNextChannel = 'reunion' | 'mail' | 'llamado'
+
 export type CommercialFollowupReminderStatus = 'open' | 'superseded' | 'cancelled'
 
 export type CommercialFollowupReminderClosedReason =
@@ -219,6 +222,8 @@ export interface CommercialFollowup {
   followed_at: string
   body: string
   next_follow_up_at: string | null
+  /** Tipo de próximo contacto (visible en agenda). */
+  next_follow_up_kind: CommercialFollowupNextChannel | null
   /** Prioridad del evento (impacto en agenda si es alta). */
   importance: CommercialFollowupImportance
   created_at: string
@@ -232,6 +237,8 @@ export interface CommercialFollowupReminder {
   quote_id: string | null
   invoice_id: string | null
   due_date: string
+  /** Reunión / Mail / Llamado (copiado del seguimiento que abrió el recordatorio). */
+  next_follow_up_kind: CommercialFollowupNextChannel | null
   status: CommercialFollowupReminderStatus
   source_followup_id: string | null
   /** Copiada del seguimiento que generó este recordatorio. */
@@ -291,6 +298,91 @@ export interface BankTransaction {
   import_hash: string
   raw: Record<string, unknown> | null
   imported_by: string | null
+  created_at: string
+  updated_at: string
+}
+
+/** Conexión a contribuyente SII (tabla `sii_connections`). */
+/** Integración SII: solo importación manual desde archivos del portal. */
+export type SiiProvider = 'direct'
+
+export interface SiiConnection {
+  id: string
+  rut: string
+  legal_name: string
+  provider: SiiProvider
+  is_active: boolean
+  initial_sync_months: number
+  last_sync_at: string | null
+  last_sync_compras_at: string | null
+  last_sync_ventas_at: string | null
+  last_sync_honorarios_at: string | null
+  created_at: string
+  updated_at: string
+}
+
+/** RCV compra — tabla `sii_purchase_documents`. */
+export interface SiiPurchaseDocument {
+  id: string
+  connection_id: string
+  periodo: string
+  tipo_dte: string
+  folio: string
+  fecha_emision: string
+  rut_emisor: string
+  razon_social_emisor: string
+  monto_neto: number
+  monto_iva: number
+  monto_total: number
+  estado_rcv: string | null
+  company_id: string | null
+  sii_import_hash: string
+  synced_at: string
+  created_at: string
+  updated_at: string
+}
+
+/** RCV venta — tabla `sii_sales_documents`. */
+export interface SiiSalesDocument {
+  id: string
+  connection_id: string
+  periodo: string
+  tipo_dte: string
+  folio: string
+  fecha_emision: string
+  rut_receptor: string
+  razon_social_receptor: string
+  monto_neto: number
+  monto_iva: number
+  monto_total: number
+  estado_rcv: string | null
+  company_id: string | null
+  sii_import_hash: string
+  synced_at: string
+  created_at: string
+  updated_at: string
+}
+
+/** Boleta honorarios — tabla `sii_honorarium_receipts`. */
+export type SiiHonorariumType = 'BHE' | 'BTE'
+
+export interface SiiHonorariumReceipt {
+  id: string
+  connection_id: string
+  periodo: string
+  numero_boleta: string
+  fecha: string
+  rut_prestador: string
+  rut_receptor: string
+  nombre_prestador: string
+  monto_bruto: number
+  retencion: number
+  liquido: number
+  estado: string | null
+  tipo_boleta: SiiHonorariumType
+  company_id: string | null
+  sii_import_hash: string
+  synced_at: string
   created_at: string
   updated_at: string
 }

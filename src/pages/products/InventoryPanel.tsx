@@ -5,6 +5,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import { Plus, Trash2, MapPin } from 'lucide-react'
+import { cn } from '@/lib/utils'
 import type { InventoryCustody, InventoryItem, ProductCurrency } from '@/types'
 
 const STATUS_COLOR: Record<string, string> = {
@@ -37,11 +38,13 @@ interface LocationForm {
 
 interface Props {
   productId: string
+  /** En modal: lista más alta */
+  variant?: 'default' | 'dialog'
   /** Tras mutar seriales (p. ej. refrescar totales en el modal padre) */
   onItemsChanged?: () => void
 }
 
-export default function InventoryPanel({ productId, onItemsChanged }: Props) {
+export default function InventoryPanel({ productId, variant = 'default', onItemsChanged }: Props) {
   const [items, setItems]               = useState<ItemWithLocation[]>([])
   const [serial, setSerial]             = useState('')
   const [notes, setNotes]               = useState('')
@@ -49,6 +52,7 @@ export default function InventoryPanel({ productId, onItemsChanged }: Props) {
   const [refPrice, setRefPrice]         = useState('')
   const [refCurrency, setRefCurrency]   = useState<ProductCurrency>('CLP')
   const [loading, setLoading]           = useState(false)
+  const [addError, setAddError]         = useState<string | null>(null)
   const [locationForm, setLocationForm] = useState<LocationForm | null>(null)
 
   async function load() {
@@ -65,6 +69,7 @@ export default function InventoryPanel({ productId, onItemsChanged }: Props) {
   async function add() {
     if (!serial.trim()) return
     setLoading(true)
+    setAddError(null)
     const parsedRef = parseFloat(refPrice.replace(',', '.'))
     const payload: Record<string, unknown> = {
       product_id:    productId,
@@ -77,7 +82,17 @@ export default function InventoryPanel({ productId, onItemsChanged }: Props) {
       payload.reference_price = parsedRef
       payload.reference_currency = refCurrency
     }
-    await supabase.from('inventory_items').insert(payload)
+    const { error } = await supabase.from('inventory_items').insert(payload)
+    if (error) {
+      const msg = error.message ?? ''
+      setAddError(
+        msg.includes('duplicate') || msg.includes('unique')
+          ? 'Ese número de serie ya existe para este producto.'
+          : msg || 'No se pudo agregar la unidad.',
+      )
+      setLoading(false)
+      return
+    }
     setSerial('')
     setNotes('')
     setCustodyNew('bodega')
@@ -134,12 +149,14 @@ export default function InventoryPanel({ productId, onItemsChanged }: Props) {
   }
 
   async function remove(id: string) {
+    if (!window.confirm('¿Eliminar esta unidad del inventario?')) return
     await supabase.from('inventory_items').delete().eq('id', id)
     await load()
     onItemsChanged?.()
   }
 
   const disponibles = items.filter(i => i.status === 'disponible').length
+  const listMaxH = variant === 'dialog' ? 'max-h-[min(50vh,20rem)]' : 'max-h-56'
 
   return (
     <div className="border rounded-md overflow-hidden">
@@ -199,10 +216,11 @@ export default function InventoryPanel({ productId, onItemsChanged }: Props) {
             <option value="UF">UF</option>
           </select>
         </div>
+        {addError && <p className="text-xs text-red-600">{addError}</p>}
       </div>
 
       {/* Lista */}
-      <div className="divide-y max-h-56 overflow-y-auto">
+      <div className={cn('divide-y overflow-y-auto', listMaxH)}>
         {items.length === 0 ? (
           <p className="px-4 py-4 text-sm text-gray-400">Sin seriales registrados</p>
         ) : items.map(item => (

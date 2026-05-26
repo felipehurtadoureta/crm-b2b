@@ -24,16 +24,29 @@ import {
   useOpenCommercialReminder,
 } from '@/hooks/useCommercialFollowups'
 import {
+  COMMERCIAL_FOLLOWUPS_NEXT_CHANNEL_MIGRATION_HINT,
   COMMERCIAL_FOLLOWUPS_SETUP_HINT,
+  COMMERCIAL_NEXT_CHANNEL_LABEL,
   isCommercialFollowupsSchemaError,
   isMissingImportanceColumnMessage,
+  isMissingNextChannelColumnMessage,
+  labelCommercialNextChannel,
   syncOpenReminderDueDateFromFollowup,
   syncOpenReminderImportanceFromFollowup,
+  syncOpenReminderNextChannelFromFollowup,
   updateCommercialFollowup,
 } from '@/lib/commercialFollowupsQuery'
 import { fmtCompactDate } from '@/lib/crmV2Display'
 import { initialsFromFullName } from '@/lib/kamDisplay'
-import type { Profile, Contact, Quote, CommercialFollowup, QuoteStage, CommercialFollowupImportance } from '@/types'
+import type {
+  Profile,
+  Contact,
+  Quote,
+  CommercialFollowup,
+  QuoteStage,
+  CommercialFollowupImportance,
+  CommercialFollowupNextChannel,
+} from '@/types'
 import { QUOTE_FOLLOWUP_CLOSED_STAGES } from '@/types'
 
 type MainTab = 'company' | 'quotes' | 'invoices'
@@ -149,7 +162,9 @@ function FollowupHistoryRow({
   const more = bodyNeedsMore(row.body)
   const imp = row.importance ?? 'media'
   const contactLabel = contactNombreCargo(contacts, row.contact_id)
-  const proxLabel = row.next_follow_up_at ? fmtCompactDate(row.next_follow_up_at) : '—'
+  const proxLabel = row.next_follow_up_at
+    ? `${fmtCompactDate(row.next_follow_up_at)} · ${labelCommercialNextChannel(row.next_follow_up_kind)}`
+    : '—'
 
   return (
     <li
@@ -223,6 +238,8 @@ function FollowupHistoryRow({
 const IMPORTANCE_CHOICE_BTN =
   'rounded-lg border px-2.5 py-1.5 text-xs font-medium transition-colors'
 
+const NEXT_CHANNEL_OPTIONS: CommercialFollowupNextChannel[] = ['reunion', 'mail', 'llamado']
+
 export type CommercialFollowupsDocumentSync = {
   destino: 'general' | 'quote' | 'invoice'
   quoteId: string | null
@@ -239,6 +256,8 @@ export interface CompanyCommercialFollowupsSectionProps {
   embeddedQuoteContext?: CompanyCommercialFollowupsQuoteRef | null
   /** Desde la URL de la ficha (`?cfTab=quotes`), abre esa pestaña al montar. */
   initialMainTab?: MainTab | null
+  /** Desde la URL (`?cfInvoiceId=`), preselecciona la factura en seguimiento comercial. */
+  initialInvoiceId?: string | null
   /** Sincroniza el gestor de documentos (destino y cotización/factura elegida en este módulo). */
   onDocumentLinkContextChange?: (ctx: CommercialFollowupsDocumentSync) => void
   /** Por encima de modales padre (p. ej. cotización en z-50). */
@@ -254,6 +273,7 @@ export default function CompanyCommercialFollowupsSection({
   anchorId = 'seccion-seguimientos',
   embeddedQuoteContext = null,
   initialMainTab = null,
+  initialInvoiceId = null,
   onDocumentLinkContextChange,
   overlayZIndex = 50,
 }: CompanyCommercialFollowupsSectionProps) {
@@ -264,18 +284,24 @@ export default function CompanyCommercialFollowupsSection({
 
   const [mainTab, setMainTab] = useState<MainTab>('company')
   const [quoteId, setQuoteId] = useState<string | null>(() => quotes[0]?.id ?? null)
-  const [invoiceId, setInvoiceId] = useState<string | null>(null)
+  const [invoiceId, setInvoiceId] = useState<string | null>(() => initialInvoiceId ?? null)
 
   const initializedTabFromUrl = useRef(false)
   useEffect(() => {
     initializedTabFromUrl.current = false
-  }, [companyId])
+    setInvoiceId(initialInvoiceId ?? null)
+  }, [companyId, initialInvoiceId])
 
   useEffect(() => {
     if (embedded || !initialMainTab || initializedTabFromUrl.current) return
     initializedTabFromUrl.current = true
     setMainTab(initialMainTab)
   }, [embedded, initialMainTab, companyId])
+
+  useEffect(() => {
+    if (embedded || !initialInvoiceId) return
+    setMainTab('invoices')
+  }, [embedded, initialInvoiceId, companyId])
 
   const [addOpen, setAddOpen] = useState(false)
   const [plainOpen, setPlainOpen] = useState(false)
@@ -285,6 +311,7 @@ export default function CompanyCommercialFollowupsSection({
   const [formFollowedAt, setFormFollowedAt] = useState(() => toDatetimeLocalValue(new Date().toISOString()))
   const [formBody, setFormBody] = useState('')
   const [formNextDate, setFormNextDate] = useState('')
+  const [formNextChannel, setFormNextChannel] = useState<CommercialFollowupNextChannel>('llamado')
   const [formImportance, setFormImportance] = useState<CommercialFollowupImportance>('media')
 
   const invoicesQ = useInvoicesForCompany(companyId, !embedded)
@@ -296,10 +323,13 @@ export default function CompanyCommercialFollowupsSection({
       setInvoiceId(null)
       return
     }
-    if (!invoiceId || !list.some(i => i.id === invoiceId)) {
-      setInvoiceId(list[0].id)
+    if (invoiceId && list.some(i => i.id === invoiceId)) return
+    if (initialInvoiceId && list.some(i => i.id === initialInvoiceId)) {
+      setInvoiceId(initialInvoiceId)
+      return
     }
-  }, [mainTab, invoicesQ.data, invoiceId])
+    setInvoiceId(list[0].id)
+  }, [mainTab, invoicesQ.data, invoiceId, initialInvoiceId])
 
   const subjectType = useMemo((): 'company' | 'quote' | 'invoice' => {
     if (embedded) return 'quote'
@@ -365,6 +395,7 @@ export default function CompanyCommercialFollowupsSection({
     setFormFollowedAt(toDatetimeLocalValue(new Date().toISOString()))
     setFormBody('')
     setFormNextDate('')
+    setFormNextChannel('llamado')
     setFormImportance('media')
   }, [addOpen, contacts])
 
@@ -445,6 +476,7 @@ export default function CompanyCommercialFollowupsSection({
   const [editContactId, setEditContactId] = useState('')
   const [editImportance, setEditImportance] = useState<CommercialFollowupImportance>('media')
   const [editNextDate, setEditNextDate] = useState('')
+  const [editNextChannel, setEditNextChannel] = useState<CommercialFollowupNextChannel>('llamado')
 
   const updateMut = useMutation({
     mutationFn: async ({ id, patch }: { id: string; patch: Parameters<typeof updateCommercialFollowup>[1] }) => {
@@ -454,6 +486,9 @@ export default function CompanyCommercialFollowupsSection({
       }
       if (patch.next_follow_up_at) {
         await syncOpenReminderDueDateFromFollowup(id, patch.next_follow_up_at)
+      }
+      if (patch.next_follow_up_kind) {
+        await syncOpenReminderNextChannelFromFollowup(id, patch.next_follow_up_kind)
       }
       return updated
     },
@@ -470,14 +505,17 @@ export default function CompanyCommercialFollowupsSection({
     setEditContactId(row.contact_id ?? '')
     setEditImportance(row.importance ?? 'media')
     setEditNextDate(row.next_follow_up_at ? row.next_follow_up_at.slice(0, 10) : '')
+    setEditNextChannel(row.next_follow_up_kind ?? 'llamado')
   }
 
-  const schemaHint =
-    followupsQ.error instanceof Error &&
-    !isMissingImportanceColumnMessage(followupsQ.error.message) &&
-    isCommercialFollowupsSchemaError(followupsQ.error.message)
-      ? COMMERCIAL_FOLLOWUPS_SETUP_HINT
-      : null
+  const schemaHint = useMemo(() => {
+    const err = followupsQ.error
+    if (!(err instanceof Error)) return null
+    if (isMissingNextChannelColumnMessage(err.message)) return COMMERCIAL_FOLLOWUPS_NEXT_CHANNEL_MIGRATION_HINT
+    if (isMissingImportanceColumnMessage(err.message)) return null
+    if (isCommercialFollowupsSchemaError(err.message)) return COMMERCIAL_FOLLOWUPS_SETUP_HINT
+    return null
+  }, [followupsQ.error])
 
   const tabBtn = (id: MainTab, label: string) => (
     <button
@@ -531,6 +569,7 @@ export default function CompanyCommercialFollowupsSection({
       invoice_id: subjectType === 'invoice' ? invoiceIdEff : null,
       created_by: null,
       importance: formImportance,
+      next_follow_up_kind: formNextChannel,
     })
   }
 
@@ -627,6 +666,24 @@ export default function CompanyCommercialFollowupsSection({
           )}
         >
           {IMPORTANCE_LABEL[imp]}
+        </button>
+      ))}
+    </div>
+  )
+
+  const nextChannelPicker = (value: CommercialFollowupNextChannel, onChange: (v: CommercialFollowupNextChannel) => void) => (
+    <div className="flex flex-wrap gap-1.5">
+      {NEXT_CHANNEL_OPTIONS.map(ch => (
+        <button
+          key={ch}
+          type="button"
+          onClick={() => onChange(ch)}
+          className={cn(
+            IMPORTANCE_CHOICE_BTN,
+            value === ch ? 'border-violet-600 bg-violet-50 text-violet-900' : 'border-gray-200 bg-white text-gray-700 hover:bg-gray-50',
+          )}
+        >
+          {COMMERCIAL_NEXT_CHANNEL_LABEL[ch]}
         </button>
       ))}
     </div>
@@ -801,7 +858,8 @@ export default function CompanyCommercialFollowupsSection({
         {reminderQ.data && (
           <div className="rounded-lg border border-blue-100 bg-blue-50/60 px-3 py-2 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
             <p className="text-xs text-blue-900">
-              <span className="font-medium">Pendiente en agenda:</span> {fmtCompactDate(reminderQ.data.due_date)}
+              <span className="font-medium">Pendiente en agenda:</span>{' '}
+              {labelCommercialNextChannel(reminderQ.data.next_follow_up_kind)} · {fmtCompactDate(reminderQ.data.due_date)}
             </p>
             {canEdit && (
               <div className="flex flex-wrap gap-2 justify-end">
@@ -957,6 +1015,11 @@ export default function CompanyCommercialFollowupsSection({
                   onChange={e => setFormNextDate(e.target.value)}
                 />
               </div>
+              <div>
+                <label className="text-[10px] uppercase text-gray-500 mb-1 block">Tipo de próximo contacto</label>
+                {nextChannelPicker(formNextChannel, setFormNextChannel)}
+                <p className="text-[10px] text-gray-400 mt-1">Aparece en el título del evento en la agenda (Reunión, Mail o Llamado).</p>
+              </div>
               {insertMut.isError && <p className="text-xs text-red-600">{(insertMut.error as Error).message}</p>}
               <div className="flex justify-end gap-2 pt-1">
                 <Button type="button" variant="outline" size="sm" onClick={() => setAddOpen(false)}>
@@ -1005,7 +1068,8 @@ export default function CompanyCommercialFollowupsSection({
                   {peekRow.next_follow_up_at ? (
                     <>
                       <span className="text-gray-400"> · </span>
-                      Próx.: {fmtCompactDate(peekRow.next_follow_up_at)}
+                      Próx.: {fmtCompactDate(peekRow.next_follow_up_at)} ·{' '}
+                      {labelCommercialNextChannel(peekRow.next_follow_up_kind)}
                     </>
                   ) : null}
                 </p>
@@ -1071,6 +1135,10 @@ export default function CompanyCommercialFollowupsSection({
                 <p className="text-[10px] text-gray-400 mt-0.5">Si coincide con el recordatorio abierto, se actualiza la fecha en la agenda.</p>
               </div>
               <div>
+                <label className="text-[10px] uppercase text-gray-500 mb-1 block">Tipo de próximo contacto</label>
+                {nextChannelPicker(editNextChannel, setEditNextChannel)}
+              </div>
+              <div>
                 <label className="text-[10px] uppercase text-gray-500">Detalle</label>
                 <textarea
                   className="mt-0.5 w-full text-sm border border-gray-200 rounded-md px-2 py-1.5 min-h-[5rem] bg-white"
@@ -1098,6 +1166,7 @@ export default function CompanyCommercialFollowupsSection({
                         contact_id: editContactId || null,
                         importance: editImportance,
                         next_follow_up_at: nextIso,
+                        next_follow_up_kind: editNextChannel,
                       },
                     })
                   }}

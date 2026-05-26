@@ -13,6 +13,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { ArrowLeft, ImagePlus } from 'lucide-react'
+import SiiConnectionsSection from '@/components/sii/SiiConnectionsSection'
 
 const BRANDING_BUCKET = 'crm-branding'
 const LOGO_MAX_BYTES = 2 * 1024 * 1024
@@ -39,7 +40,12 @@ async function persistSettings(m: CrmAppSettingsMerged) {
   if (error) throw new Error(error.message)
 }
 
-export default function AdminOrganizationPage() {
+interface Props {
+  /** Dentro de /admin/users con pestañas */
+  embedded?: boolean
+}
+
+export default function AdminOrganizationPage({ embedded = false }: Props) {
   const qc = useQueryClient()
   const logoInputRef = useRef<HTMLInputElement>(null)
   const serverSnapshot = useRef<CrmAppSettingsMerged | null>(null)
@@ -128,17 +134,21 @@ export default function AdminOrganizationPage() {
   const d = CRM_COMPANY_DEFAULTS
 
   return (
-    <div className="max-w-2xl space-y-6">
-      <div className="flex items-center gap-3">
-        <Button variant="ghost" size="sm" className="gap-1.5 -ml-2" asChild>
-          <Link to="/">
-            <ArrowLeft size={14} />
-            Volver al panel
-          </Link>
-        </Button>
-      </div>
+    <div className={embedded ? 'max-w-3xl space-y-6' : 'max-w-2xl space-y-6'}>
+      {!embedded && (
+        <div className="flex items-center gap-3">
+          <Button variant="ghost" size="sm" className="gap-1.5 -ml-2" asChild>
+            <Link to="/admin/users">
+              <ArrowLeft size={14} />
+              Volver a administración
+            </Link>
+          </Button>
+        </div>
+      )}
       <div>
-        <h1 className="text-xl font-semibold text-gray-900">Organización y marca</h1>
+        <h2 className={embedded ? 'text-lg font-semibold text-gray-900' : 'text-xl font-semibold text-gray-900'}>
+          Organización y marca
+        </h2>
         <p className="text-sm text-gray-500 mt-1">
           Estos datos sustituyen los valores por defecto de <span className="font-mono">src/config/company.ts</span> y definen el
           bloque emisor en cotizaciones impresas. El logo aparece en el menú lateral si está configurado.
@@ -235,6 +245,8 @@ export default function AdminOrganizationPage() {
           </Button>
         </div>
       </div>
+
+      <SiiConnectionsSection />
     </div>
   )
 }

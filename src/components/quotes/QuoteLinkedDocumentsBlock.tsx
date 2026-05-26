@@ -2,27 +2,15 @@
  * Documentos asociados a una cotización (company_documents.quote_id): carga, lista y vista previa.
  * Estilo alineado a la ficha empresa v2.
  */
-import { useCallback, useRef, useState } from 'react'
+import { useCallback, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { supabase } from '@/lib/supabase'
-import { companyDocumentsByQuoteQueryOptions } from '@/lib/companyDocumentsQuery'
-import {
-  COMPANY_DOCUMENTS_BUCKET,
-  COMPANY_DOCUMENT_ACCEPT_INPUT,
-  MAX_COMPANY_DOCUMENT_BYTES,
-  uploadCompanyDocumentFiles,
-} from '@/lib/companyDocumentsUpload'
+import { companyDocumentsByQuoteQueryOptions, COMPANY_DOCUMENT_CATEGORY_LABEL } from '@/lib/companyDocumentsQuery'
+import CompanyDocumentUploadZone from '@/components/documents/CompanyDocumentUploadZone'
+import { COMPANY_DOCUMENTS_BUCKET, uploadCompanyDocumentFiles } from '@/lib/companyDocumentsUpload'
 import type { CompanyDocument, CompanyDocumentCategory } from '@/types'
 import { Button } from '@/components/ui/button'
-import { cn } from '@/lib/utils'
-import { Download, Eye, FileText, Paperclip, Trash2, Upload, X } from 'lucide-react'
-
-const CATEGORY_LABEL: Record<CompanyDocumentCategory, string> = {
-  contrato: 'Contrato',
-  orden_compra: 'Orden de compra',
-  factura: 'Factura',
-  otro: 'Otro',
-}
+import { Download, Eye, FileText, Paperclip, Trash2, X } from 'lucide-react'
 
 function isImageMime(m: string | null, name: string) {
   if (m?.startsWith('image/')) return true
@@ -48,9 +36,6 @@ interface Props {
 
 export default function QuoteLinkedDocumentsBlock({ quoteId, companyId, canEdit }: Props) {
   const qc = useQueryClient()
-  const fileRef = useRef<HTMLInputElement>(null)
-  const dragDepth = useRef(0)
-  const [dragActive, setDragActive] = useState(false)
   const [category, setCategory] = useState<CompanyDocumentCategory>('otro')
   const [notice, setNotice] = useState<string | null>(null)
 
@@ -96,8 +81,7 @@ export default function QuoteLinkedDocumentsBlock({ quoteId, companyId, canEdit 
   }
 
   const runUpload = useCallback(
-    (list: FileList | File[]) => {
-      const files = Array.from(list as Iterable<File>)
+    (files: File[]) => {
       if (files.length === 0 || !canEdit) return
       uploadMut.mutate(files)
     },
@@ -125,80 +109,29 @@ export default function QuoteLinkedDocumentsBlock({ quoteId, companyId, canEdit 
       </div>
 
       {canEdit && (
-        <div
-          className={cn(
-            'mx-4 mt-3 mb-0 rounded-xl border-2 border-dashed px-4 py-4 transition-colors',
-            dragActive ? 'border-violet-500 bg-violet-50/80' : 'border-gray-200 bg-gray-50/80',
-            uploadMut.isPending && 'pointer-events-none opacity-70',
-          )}
-          onDragEnter={e => {
-            e.preventDefault()
-            e.stopPropagation()
-            dragDepth.current += 1
-            if (e.dataTransfer.types.includes('Files')) setDragActive(true)
-          }}
-          onDragLeave={e => {
-            e.preventDefault()
-            e.stopPropagation()
-            dragDepth.current -= 1
-            if (dragDepth.current <= 0) {
-              dragDepth.current = 0
-              setDragActive(false)
-            }
-          }}
-          onDragOver={e => {
-            e.preventDefault()
-            e.stopPropagation()
-            if (e.dataTransfer.types.includes('Files')) e.dataTransfer.dropEffect = 'copy'
-          }}
-          onDrop={e => {
-            e.preventDefault()
-            e.stopPropagation()
-            dragDepth.current = 0
-            setDragActive(false)
-            if (e.dataTransfer.files?.length) runUpload(e.dataTransfer.files)
-          }}
-        >
-          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-            <div>
-              <p className="text-sm font-medium text-gray-800">{dragActive ? 'Suelte los archivos aquí' : 'Arrastre archivos o elija desde el equipo'}</p>
-              <p className="text-xs text-gray-500 mt-0.5">
-                Máximo {MAX_COMPANY_DOCUMENT_BYTES / (1024 * 1024)} MB por archivo. Quedan vinculados a esta cotización.
-              </p>
-            </div>
-            <div className="flex flex-wrap items-center gap-2">
+        <CompanyDocumentUploadZone
+          className="mx-4 mt-3 mb-0 px-4 py-4"
+          isUploading={uploadMut.isPending}
+          onFiles={runUpload}
+          buttonLabel="Elegir archivos"
+          hint="Arrastre, pegue (Ctrl+V) o elija archivos — quedan en esta cotización"
+          controls={
+            <label className="flex items-center gap-2 text-xs text-gray-600">
+              <span className="text-gray-500">Categoría</span>
               <select
                 value={category}
                 onChange={e => setCategory(e.target.value as CompanyDocumentCategory)}
-                className="text-xs border border-gray-200 rounded-lg px-2 py-1.5 bg-white text-gray-800"
-                title="Categoría"
+                className="border border-gray-200 rounded-lg px-2 py-1.5 bg-white text-gray-800"
               >
-                {(Object.keys(CATEGORY_LABEL) as CompanyDocumentCategory[]).map(k => (
+                {(Object.keys(COMPANY_DOCUMENT_CATEGORY_LABEL) as CompanyDocumentCategory[]).map(k => (
                   <option key={k} value={k}>
-                    {CATEGORY_LABEL[k]}
+                    {COMPANY_DOCUMENT_CATEGORY_LABEL[k]}
                   </option>
                 ))}
               </select>
-              <input
-                ref={fileRef}
-                type="file"
-                className="hidden"
-                multiple
-                accept={COMPANY_DOCUMENT_ACCEPT_INPUT}
-                disabled={uploadMut.isPending}
-                onChange={e => {
-                  const list = e.target.files
-                  e.target.value = ''
-                  if (list?.length) runUpload(list)
-                }}
-              />
-              <Button type="button" variant="outline" size="sm" className="h-8 text-xs gap-1" disabled={uploadMut.isPending} onClick={() => fileRef.current?.click()}>
-                <Upload size={14} />
-                {uploadMut.isPending ? 'Subiendo…' : 'Elegir archivos'}
-              </Button>
-            </div>
-          </div>
-        </div>
+            </label>
+          }
+        />
       )}
 
       <div className="p-4 space-y-3">
@@ -220,7 +153,7 @@ export default function QuoteLinkedDocumentsBlock({ quoteId, companyId, canEdit 
                   <div className="min-w-0">
                     <p className="text-sm font-medium text-gray-900 truncate">{doc.file_name}</p>
                     <p className="text-xs text-gray-500 mt-0.5">
-                      {CATEGORY_LABEL[doc.category]}
+                      {COMPANY_DOCUMENT_CATEGORY_LABEL[doc.category as CompanyDocumentCategory] ?? doc.category}
                       <span className="text-gray-300 mx-1">·</span>
                       {new Date(doc.created_at).toLocaleString('es-CL', {
                         day: '2-digit',

@@ -112,13 +112,25 @@ export default function CompanyWorkspacePageV2() {
     setFollowupDocumentSyncState(prev => ({ ...ctx, revision: prev.revision + 1 }))
   }, [])
 
+  const initialFollowupInvoiceId = useMemo(() => {
+    const raw = (searchParams.get('cfInvoiceId') ?? searchParams.get('invoiceId') ?? '').trim()
+    return raw || null
+  }, [searchParams])
+
   const initialFollowupMainTab = useMemo((): 'company' | 'quotes' | 'invoices' | null => {
+    if (initialFollowupInvoiceId) return 'invoices'
     const raw = (searchParams.get('cfTab') ?? '').trim().toLowerCase()
     if (raw === 'quotes' || raw === 'cotizaciones' || raw === 'cotización') return 'quotes'
     if (raw === 'invoices' || raw === 'facturas' || raw === 'factura') return 'invoices'
     if (raw === 'company' || raw === 'llamados' || raw === 'llamado') return 'company'
     return null
-  }, [searchParams])
+  }, [searchParams, initialFollowupInvoiceId])
+
+  useEffect(() => {
+    if (!initialFollowupInvoiceId || loading) return
+    const t = window.setTimeout(() => scrollToCompanySection('seccion-seguimientos'), 200)
+    return () => clearTimeout(t)
+  }, [companyId, initialFollowupInvoiceId, loading])
 
   const load = useCallback(async () => {
     if (!companyId) return
@@ -290,6 +302,7 @@ export default function CompanyWorkspacePageV2() {
         kams={kams}
         canEdit={canEdit}
         initialMainTab={initialFollowupMainTab ?? undefined}
+        initialInvoiceId={initialFollowupInvoiceId}
         onDocumentLinkContextChange={onFollowupDocumentContextChange}
       />
 

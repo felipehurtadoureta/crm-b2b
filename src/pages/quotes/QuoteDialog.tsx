@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
 import { supabase } from '@/lib/supabase'
 import { useAuth } from '@/hooks/useAuth'
@@ -22,19 +21,14 @@ import { Separator } from '@/components/ui/separator'
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select'
-import { Plus, Trash2, RefreshCw, PackageSearch, Printer } from 'lucide-react'
+import { Plus, Trash2, RefreshCw, Printer, PenLine } from 'lucide-react'
 import QuotePrintView from './QuotePrintView'
 import QuoteLinkedDocumentsBlock from '@/components/quotes/QuoteLinkedDocumentsBlock'
 import QuoteInvoiceValidationDialog from '@/components/quotes/QuoteInvoiceValidationDialog'
 import { fetchInvoiceForQuote } from '@/lib/quoteInvoiceFulfillment'
+import { syncQuoteFollowupRemindersForStage } from '@/lib/commercialFollowupsQuery'
+import { cn } from '@/lib/utils'
 import QuoteAmountInput from '@/components/quotes/QuoteAmountInput'
-import {
-  QUOTE_RESERVE_INVENTORY_STAGES,
-  applyReservationsForQuote,
-  releaseReservationsForQuote,
-} from '@/lib/quoteInventoryReservation'
-import { productTracksSerialStock } from '@/lib/productInventoryRules'
-
 /* ─── tipos ─────────────────────────────────────────────────────── */
 type Currency     = 'CLP' | 'USD' | 'UF'
 type DiscountType = 'none' | 'percent' | 'fixed'
@@ -91,16 +85,17 @@ const LINE_KIND_LABEL: Record<QuoteLineKind, string> = {
   custom: 'Ítem libre',
 }
 
+/** Catálogo: servicios → service; productos físicos → procure (sin vínculo a inventario). */
+function defaultLineKindForCatalogProduct(p: Product): QuoteLineKind {
+  if (p.type === 'service') return 'service'
+  return 'procure'
+}
+
 const PRICING_MODEL_LABEL: Record<QuotePricingModel, string> = {
   sale: 'Venta',
   monthly_rental: 'Arriendo mensual',
 }
 
-/** Línea física desde catálogo: stock si lleva series; si no, abastecimiento externo. */
-function defaultLineKindForCatalogProduct(p: Product): QuoteLineKind {
-  if (p.type === 'service') return 'service'
-  return productTracksSerialStock(p) ? 'stock' : 'procure'
-}
 const SYMBOL: Record<Currency, string> = { CLP: '$', USD: 'US$', UF: 'UF' }
 const mkTempId = () => Math.random().toString(36).slice(2)
 const today    = () => new Date().toISOString().slice(0, 10)
@@ -142,14 +137,11 @@ const symOf = (cur: string) => cur === 'CLP' ? '$' : cur === 'USD' ? 'US$' : cur
 export default function QuoteDialog({ open, onClose, quote, companies, contacts, kams, products,
   initialCompanyId, initialContactId, initialCallId, onSaved }: Props) {
   const { profile } = useAuth()
-  const queryClient = useQueryClient()
   const [form, setForm]         = useState<FormState>(EMPTY(''))
   const [items, setItems]       = useState<LineItem[]>([])
   const [loading, setLoading]   = useState(false)
   const [error, setError]       = useState<string | null>(null)
   const [showPrint, setShowPrint]           = useState(false)
-  /** Mensajes tras guardar cuando la etapa aplica reserva automática */
-  const [inventoryReserveNote, setInventoryReserveNote] = useState<string[]>([])
   const [invoicePending, setInvoicePending] = useState<{
     quoteId: string
     companyId: string
@@ -157,6 +149,7 @@ export default function QuoteDialog({ open, onClose, quote, companies, contacts,
     quoteTotal: number
     quoteCurrency: string
   } | null>(null)
+  const [invoiceModalOpen, setInvoiceModalOpen] = useState(false)
 
   const readonly = profile?.role === 'reader' ||
     (profile?.role === 'kam' && !!quote && quote.kam_id !== profile.id)
@@ -169,90 +162,6 @@ export default function QuoteDialog({ open, onClose, quote, companies, contacts,
   const sym     = SYMBOL[cur]
   const usdRate = parseFloat(form.usd_clp_rate) || 0
   const ufRate  = parseFloat(form.uf_clp_rate)  || 0
-
-  /** Productos con serie para los que esta cotización pide líneas "stock". */
-  const stockTrackedProductIds = useMemo(() => {
-    const ids = new Set<string>()
-    for (const i of items) {
-      if (i.is_free || i.line_kind !== 'stock') continue
-      const p = products.find(x => x.id === i.product_id)
-      if (!p || p.type === 'service') continue
-      if (!productTracksSerialStock(p)) continue
-      ids.add(i.product_id)
-    }
-    return Array.from(ids)
-  }, [items, products])
-
-  const { data: disponiblesPorProducto = {} } = useQuery({
-    queryKey: ['inventory-disponibles-cotizacion', [...stockTrackedProductIds].sort().join(',')],
-    enabled: open && stockTrackedProductIds.length > 0,
-    queryFn: async () => {
-      const { data, error } = await supabase
-        .from('inventory_items')
-        .select('product_id')
-        .in('product_id', stockTrackedProductIds)
-        .eq('status', 'disponible')
-      if (error) throw error
-      const map: Record<string, number> = {}
-      for (const pid of stockTrackedProductIds) map[pid] = 0
-      for (const row of data ?? []) {
-        const pid = (row as { product_id: string }).product_id
-        map[pid] = (map[pid] ?? 0) + 1
-      }
-      return map
-    },
-  })
-
-  const requestedStockPorProducto = useMemo(() => {
-    const map: Record<string, number> = {}
-    for (const i of items) {
-      if (i.is_free || i.line_kind !== 'stock') continue
-      const p = products.find(x => x.id === i.product_id)
-      if (!p || p.type === 'service') continue
-      if (!productTracksSerialStock(p)) continue
-      map[i.product_id] = (map[i.product_id] ?? 0) + i.quantity
-    }
-    return map
-  }, [items, products])
-
-  /** Por orden de línea: unidades desde bodega vs a fabricar (reparto por producto al estilo FIFO, coherente con la reserva). */
-  const stockPorLineaBodegaFabricar = useMemo(() => {
-    const pool: Record<string, number> = {}
-    for (const pid of stockTrackedProductIds) {
-      pool[pid] = disponiblesPorProducto[pid] ?? 0
-    }
-    const map: Record<string, { desdeBodega: number; fabricar: number }> = {}
-    for (const i of items) {
-      if (i.is_free || i.line_kind !== 'stock') continue
-      const p = products.find(x => x.id === i.product_id)
-      if (!p || p.type === 'service' || !productTracksSerialStock(p)) continue
-      const qty = Math.max(0, Math.floor(Number(i.quantity) || 0))
-      const restante = Math.max(0, pool[i.product_id] ?? 0)
-      const desdeBodega = Math.min(qty, restante)
-      const fabricar = qty - desdeBodega
-      pool[i.product_id] = restante - desdeBodega
-      map[i.tempId] = { desdeBodega, fabricar }
-    }
-    return map
-  }, [items, products, disponiblesPorProducto, stockTrackedProductIds])
-
-  const advertenciasStock = useMemo(() => {
-    /** En aceptada / orden de venta el stock ya reservado deja `disponible` en 0; avisar solo distorsiona y parece “duplicar” la necesidad. */
-    if (QUOTE_RESERVE_INVENTORY_STAGES.has(form.stage)) return []
-    const list: { productId: string; name: string; needed: number; available: number }[] = []
-    for (const [productId, needed] of Object.entries(requestedStockPorProducto)) {
-      const available = disponiblesPorProducto[productId] ?? 0
-      if (needed > available) {
-        list.push({
-          productId,
-          name: products.find(p => p.id === productId)?.name ?? productId,
-          needed,
-          available,
-        })
-      }
-    }
-    return list.sort((a, b) => a.name.localeCompare(b.name, 'es'))
-  }, [requestedStockPorProducto, disponiblesPorProducto, products, form.stage])
 
   const itemCurrencies  = new Set(items.map(i => i.product_currency).filter(Boolean))
   const needsUsdRate    = cur === 'USD' || itemCurrencies.has('USD')
@@ -311,12 +220,11 @@ export default function QuoteDialog({ open, onClose, quote, companies, contacts,
               let line_kind = i.line_kind as QuoteLineKind | undefined
               if (!line_kind) {
                 if (!i.product_id) line_kind = 'custom'
-                else line_kind = prod?.type === 'service' ? 'service' : 'stock'
+                else if (prod?.type === 'service') line_kind = 'service'
+                else line_kind = 'procure'
               }
+              if (line_kind === 'stock') line_kind = 'procure'
               const pricing_model = (i.pricing_model as QuotePricingModel) ?? 'sale'
-              if (prod && productTracksSerialStock(prod as Product) && line_kind === 'procure') {
-                line_kind = 'stock'
-              }
 
               return {
                 tempId: mkTempId(),
@@ -357,11 +265,6 @@ export default function QuoteDialog({ open, onClose, quote, companies, contacts,
     }
   }, [open, quote?.id]) // eslint-disable-line
 
-  /** Al cerrar el modal se borra el último resultado de sincronización con inventario. */
-  useEffect(() => {
-    if (!open) setInventoryReserveNote([])
-  }, [open])
-
   const set = (field: keyof FormState, value: string | number | boolean) =>
     setForm(prev => ({ ...prev, [field]: value }))
 
@@ -389,7 +292,7 @@ export default function QuoteDialog({ open, onClose, quote, companies, contacts,
         unit_price: 0,
         quantity: 1,
         subtotal: 0,
-        line_kind: 'stock',
+        line_kind: 'procure',
         pricing_model: 'sale',
         inventory_item_id: null,
       },
@@ -437,17 +340,6 @@ export default function QuoteDialog({ open, onClose, quote, companies, contacts,
       ),
     )
   }
-  const updateLineKind = (tempId: string, kind: QuoteLineKind) => {
-    setItems(prev =>
-      prev.map(i => {
-        if (i.tempId !== tempId) return i
-        const p = products.find(x => x.id === i.product_id)
-        if (p && productTracksSerialStock(p) && kind === 'procure') return i
-        return { ...i, line_kind: kind }
-      }),
-    )
-  }
-
   const updatePricingModel = (tempId: string, model: QuotePricingModel) => {
     setItems(prev => prev.map(i => (i.tempId !== tempId ? i : { ...i, pricing_model: model })))
   }
@@ -490,7 +382,6 @@ export default function QuoteDialog({ open, onClose, quote, companies, contacts,
 
     setLoading(true)
     setError(null)
-    setInventoryReserveNote([])
     try {
       const prevStage = quote ? normalizeQuoteStage(quote.stage) : 'borrador'
       let saveStage = form.stage
@@ -543,9 +434,6 @@ export default function QuoteDialog({ open, onClose, quote, companies, contacts,
         : await supabase.from('quotes').insert(payload).select().single()
       if (qErr) throw qErr
 
-      /** Antes de borrar/recargar ítems: liberar reservas asociadas a la cotización existente */
-      if (quote?.id) await releaseReservationsForQuote(quote.id)
-
       if (items.length > 0) {
         const { error: delErr } = await supabase.from('quote_items').delete().eq('quote_id', saved.id)
         if (delErr) throw delErr
@@ -561,7 +449,7 @@ export default function QuoteDialog({ open, onClose, quote, companies, contacts,
             line_kind: i.is_free ? 'custom' : i.line_kind,
             pricing_model: i.pricing_model,
             procurement_plan: !i.is_free && i.line_kind === 'procure' ? 'manufacture' : null,
-            inventory_item_id: i.inventory_item_id || null,
+            inventory_item_id: null,
           })),
         )
         if (insErr) throw insErr
@@ -569,16 +457,6 @@ export default function QuoteDialog({ open, onClose, quote, companies, contacts,
         const { error: delEmptyErr } = await supabase.from('quote_items').delete().eq('quote_id', saved.id)
         if (delEmptyErr) throw delEmptyErr
       }
-
-      let reserveMsgs: string[] = []
-      if (QUOTE_RESERVE_INVENTORY_STAGES.has(saveStage)) {
-        const r = await applyReservationsForQuote(saved.id)
-        reserveMsgs = r.messages
-        if (!r.ok) console.warn('[cotización] reserva inventario', r.messages.join(' | '))
-      }
-      setInventoryReserveNote(reserveMsgs)
-      void queryClient.invalidateQueries({ queryKey: ['inventory-disponibles-cotizacion'] })
-      void queryClient.invalidateQueries({ queryKey: ['fabricacion-pendiente-cotizaciones'] })
 
       if (openInvoiceAfter) {
         setInvoicePending({
@@ -588,8 +466,13 @@ export default function QuoteDialog({ open, onClose, quote, companies, contacts,
           quoteTotal: Number(saved.total) || total,
           quoteCurrency: (saved.currency as string) || cur,
         })
+        setInvoiceModalOpen(true)
         setForm(f => ({ ...f, stage: prevStage }))
         return
+      }
+
+      if (quote?.id && normalizeQuoteStage(prevStage) !== normalizeQuoteStage(saveStage)) {
+        await syncQuoteFollowupRemindersForStage(quote.id, prevStage, saveStage)
       }
 
       onSaved()
@@ -602,7 +485,6 @@ export default function QuoteDialog({ open, onClose, quote, companies, contacts,
 
   const handleDelete = async () => {
     if (!quote || !confirm('¿Eliminar esta cotización?')) return
-    await releaseReservationsForQuote(quote.id)
     await supabase.from('quote_items').delete().eq('quote_id', quote.id)
     await supabase.from('quotes').delete().eq('id', quote.id)
     onSaved()
@@ -612,6 +494,24 @@ export default function QuoteDialog({ open, onClose, quote, companies, contacts,
 
   return (
     <>
+      {invoicePending && (
+        <QuoteInvoiceValidationDialog
+          open={invoiceModalOpen}
+          quoteId={invoicePending.quoteId}
+          companyId={invoicePending.companyId}
+          quoteNumber={invoicePending.quoteNumber}
+          quoteTotal={invoicePending.quoteTotal}
+          quoteCurrency={invoicePending.quoteCurrency}
+          onClose={() => setInvoiceModalOpen(false)}
+          onCompleted={() => {
+            setInvoicePending(null)
+            setInvoiceModalOpen(false)
+            onSaved()
+            onClose()
+          }}
+        />
+      )}
+
       <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
         <div className="bg-white rounded-xl border border-gray-200 shadow-xl w-full max-w-4xl mx-4 flex flex-col max-h-[92vh]">
 
@@ -645,8 +545,24 @@ export default function QuoteDialog({ open, onClose, quote, companies, contacts,
             </button>
           </div>
 
+          {invoicePending && !invoiceModalOpen && (
+            <div className="mx-4 mt-3 rounded-lg border border-violet-200 bg-violet-50 px-3 py-2 flex flex-wrap items-center justify-between gap-2 shrink-0">
+              <p className="text-xs text-violet-900">
+                Tiene una facturación en curso. Puede volver al formulario sin perder lo ingresado.
+              </p>
+              <Button type="button" size="sm" className="h-8 text-xs" onClick={() => setInvoiceModalOpen(true)}>
+                Continuar facturación
+              </Button>
+            </div>
+          )}
+
           {/* Body */}
-          <div className="flex-1 overflow-y-auto px-4 py-4 space-y-5 scroll-smooth">
+          <div
+            className={cn(
+              'flex-1 px-4 py-4 space-y-5 scroll-smooth',
+              invoiceModalOpen ? 'overflow-hidden' : 'overflow-y-auto',
+            )}
+          >
 
             {/* Info básica */}
             <div className="grid grid-cols-2 gap-4">
@@ -832,7 +748,7 @@ export default function QuoteDialog({ open, onClose, quote, companies, contacts,
                 {!readonly && (
                   <div className="flex gap-2">
                     <Button type="button" size="sm" variant="outline" onClick={addFreeItem}>
-                      <PackageSearch size={14} className="mr-1" /> Ítem libre
+                      <PenLine size={14} className="mr-1" /> Ítem libre
                     </Button>
                     <Button type="button" size="sm" variant="outline" onClick={addCatalogItem}>
                       <Plus size={14} className="mr-1" /> Del catálogo
@@ -847,20 +763,6 @@ export default function QuoteDialog({ open, onClose, quote, companies, contacts,
                 </div>
               ) : (
                 <>
-                  {advertenciasStock.length > 0 && (
-                    <div className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-950 mb-3 space-y-1">
-                      <p className="font-medium">Stock insuficiente en líneas «Stock propio»</p>
-                      <ul className="list-disc ml-4 space-y-0.5">
-                        {advertenciasStock.map(a => (
-                          <li key={a.productId}>
-                            <span className="font-medium">{a.name}</span>: en la línea «Stock propio» pedís {a.needed}{' '}
-                            unidad(es) y hay {a.available} disponible(s). Al aceptar la cotización se reservan las
-                            disponibles; el resto queda como fabricación pendiente (ver pantalla Inventario).
-                          </li>
-                        ))}
-                      </ul>
-                    </div>
-                  )}
                   <div className="overflow-hidden rounded-lg border">
                   <table className="w-full text-sm">
                     <thead className="border-b bg-gray-50">
@@ -876,7 +778,6 @@ export default function QuoteDialog({ open, onClose, quote, companies, contacts,
                       {items.map(item => {
                         const isDiff = !item.is_free && item.product_currency && item.product_currency !== cur
                         const prodRow = products.find(x => x.id === item.product_id)
-                        const sx = stockPorLineaBodegaFabricar[item.tempId]
                         return (
                           <tr key={item.tempId} className={item.is_free ? 'bg-blue-50/40' : 'hover:bg-gray-50/60'}>
                             <td className="px-3 py-2 align-middle min-w-0">
@@ -908,9 +809,6 @@ export default function QuoteDialog({ open, onClose, quote, companies, contacts,
                                               {prodRow.description?.trim() ? (
                                                 <span className="text-gray-500">{` · ${prodRow.description.trim()}`}</span>
                                               ) : null}
-                                              {sx ? (
-                                                <span className="text-gray-800 font-semibold">{` (${sx.desdeBodega} / ${sx.fabricar})`}</span>
-                                              ) : null}
                                             </span>
                                           ) : (
                                             <SelectValue placeholder="Selecciona un producto" />
@@ -931,31 +829,10 @@ export default function QuoteDialog({ open, onClose, quote, companies, contacts,
                                         {LINE_KIND_LABEL.service}
                                       </span>
                                     )}
-                                    {prodRow && prodRow.type !== 'service' && !productTracksSerialStock(prodRow) && (
-                                      <>
-                                        {readonly ? (
-                                          <span className="text-xs rounded bg-gray-100 text-gray-700 px-2 py-0.5 whitespace-nowrap">
-                                            {LINE_KIND_LABEL[item.line_kind]}
-                                          </span>
-                                        ) : (
-                                          <Select
-                                            value={
-                                              item.line_kind === 'procure' || item.line_kind === 'stock'
-                                                ? item.line_kind
-                                                : 'stock'
-                                            }
-                                            onValueChange={v => updateLineKind(item.tempId, v as QuoteLineKind)}
-                                          >
-                                            <SelectTrigger className="h-7 w-[148px] text-xs shrink-0">
-                                              <SelectValue />
-                                            </SelectTrigger>
-                                            <SelectContent>
-                                              <SelectItem value="stock">{LINE_KIND_LABEL.stock}</SelectItem>
-                                              <SelectItem value="procure">{LINE_KIND_LABEL.procure}</SelectItem>
-                                            </SelectContent>
-                                          </Select>
-                                        )}
-                                      </>
+                                    {prodRow && prodRow.type !== 'service' && (
+                                      <span className="text-xs rounded bg-gray-100 text-gray-700 px-2 py-0.5 shrink-0 whitespace-nowrap">
+                                        {LINE_KIND_LABEL.procure}
+                                      </span>
                                     )}
                                     {readonly ? (
                                       <span className="text-xs rounded bg-violet-50 text-violet-800 px-2 py-0.5 shrink-0 whitespace-nowrap">
@@ -1125,16 +1002,6 @@ export default function QuoteDialog({ open, onClose, quote, companies, contacts,
               <QuoteLinkedDocumentsBlock key={quote.id} quoteId={quote.id} companyId={form.company_id} canEdit={!readonly} />
             )}
 
-            {inventoryReserveNote.length > 0 && (
-              <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-800 space-y-1">
-                <p className="font-semibold text-slate-900">Inventario después de guardar</p>
-                <ul className="list-disc ml-4 space-y-0.5">
-                  {inventoryReserveNote.map((m, i) => (
-                    <li key={i}>{m}</li>
-                  ))}
-                </ul>
-              </div>
-            )}
             {error && <p className="text-sm text-red-500">{error}</p>}
           </div>
 
@@ -1163,22 +1030,6 @@ export default function QuoteDialog({ open, onClose, quote, companies, contacts,
         <QuotePrintView quoteId={quote.id} onClose={() => setShowPrint(false)} />
       )}
 
-      {invoicePending && (
-        <QuoteInvoiceValidationDialog
-          open
-          quoteId={invoicePending.quoteId}
-          companyId={invoicePending.companyId}
-          quoteNumber={invoicePending.quoteNumber}
-          quoteTotal={invoicePending.quoteTotal}
-          quoteCurrency={invoicePending.quoteCurrency}
-          onClose={() => setInvoicePending(null)}
-          onCompleted={() => {
-            setInvoicePending(null)
-            onSaved()
-            onClose()
-          }}
-        />
-      )}
     </>
   )
 }
