@@ -1,7 +1,7 @@
 /**
  * Documentos tributarios SII: RCV compras/ventas y boletas de honorarios.
  */
-import { useMemo, useState } from 'react'
+import { useMemo, useState, type ReactNode } from 'react'
 import { Link } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { Settings2, Upload } from 'lucide-react'
