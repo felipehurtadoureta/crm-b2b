@@ -15,6 +15,7 @@ import {
   LogOut,
   Landmark,
   FileSpreadsheet,
+  X,
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
@@ -43,7 +44,15 @@ function isNavActive(pathname: string, href: string) {
   return pathname === href || (href !== '/' && pathname.startsWith(href))
 }
 
-export default function Sidebar() {
+interface SidebarProps {
+  className?: string
+  /** Cierra el drawer móvil al elegir una ruta. */
+  onNavigate?: () => void
+  /** Botón cerrar visible en el drawer móvil. */
+  onClose?: () => void
+}
+
+export default function Sidebar({ className, onNavigate, onClose }: SidebarProps) {
   const location = useLocation()
   const { profile, signOut, loading: profileLoading } = useAuth()
   const branding = useCrmAppSettings()
@@ -67,18 +76,35 @@ export default function Sidebar() {
   }, [m.logoUrl])
 
   return (
-    <aside className="w-60 min-h-screen bg-gray-900 text-white flex flex-col">
-      <div className="px-5 pt-5 pb-4 shrink-0">
-        {showLogo && (
-          <img
-            src={m.logoUrl!}
-            alt=""
-            className="h-10 max-w-[9.5rem] object-contain mb-2"
-            onError={() => setLogoBroken(true)}
-          />
+    <aside
+      className={cn(
+        'w-60 min-h-screen bg-gray-900 text-white flex flex-col',
+        className,
+      )}
+    >
+      <div className="px-5 pt-5 pb-4 shrink-0 flex items-start justify-between gap-2">
+        <div className="min-w-0 flex-1">
+          {showLogo && (
+            <img
+              src={m.logoUrl!}
+              alt=""
+              className="h-10 max-w-[9.5rem] object-contain mb-2"
+              onError={() => setLogoBroken(true)}
+            />
+          )}
+          <h1 className="text-lg font-semibold tracking-tight leading-tight">{m.displayName}</h1>
+          <p className="text-xs text-gray-400 mt-1 leading-snug">{m.tagline}</p>
+        </div>
+        {onClose && (
+          <button
+            type="button"
+            onClick={onClose}
+            className="shrink-0 rounded-md p-1.5 text-gray-400 hover:bg-gray-800 hover:text-white transition-colors"
+            aria-label="Cerrar menú"
+          >
+            <X size={20} />
+          </button>
         )}
-        <h1 className="text-lg font-semibold tracking-tight leading-tight">{m.displayName}</h1>
-        <p className="text-xs text-gray-400 mt-1 leading-snug">{m.tagline}</p>
       </div>
 
       <Separator className="bg-gray-700 shrink-0" />
@@ -118,7 +144,7 @@ export default function Sidebar() {
 
       <Separator className="bg-gray-700 shrink-0" />
 
-      <nav className="flex-1 px-3 py-4 space-y-3 overflow-y-auto min-h-0">
+      <nav className="flex-1 px-3 py-4 space-y-3 overflow-y-auto min-h-0 overscroll-contain">
         {navSkeleton ? (
           Array.from({ length: 6 }).map((_, i) => (
             <div key={i} className="h-9 rounded-md bg-gray-800/80 animate-pulse" aria-hidden />
@@ -133,8 +159,9 @@ export default function Sidebar() {
                 <Link
                   key={href}
                   to={href}
+                  onClick={onNavigate}
                   className={cn(
-                    'flex items-center gap-3 px-3 py-2 rounded-md text-sm transition-colors',
+                    'flex items-center gap-3 px-3 py-2.5 rounded-md text-sm transition-colors',
                     active
                       ? 'bg-gray-700 text-white font-medium'
                       : 'text-gray-400 hover:bg-gray-800 hover:text-white',
@@ -162,8 +189,9 @@ export default function Sidebar() {
                     <Link
                       key={href}
                       to={href}
+                      onClick={onNavigate}
                       className={cn(
-                        'flex items-center gap-3 px-3 py-2 rounded-md text-sm transition-colors',
+                        'flex items-center gap-3 px-3 py-2.5 rounded-md text-sm transition-colors',
                         active
                           ? 'bg-gray-700 text-white font-medium'
                           : 'text-gray-400 hover:bg-gray-800 hover:text-white',
