@@ -3,6 +3,7 @@
  *
  * supabase functions deploy sii-import
  */
+import { resolveRcvImportType } from '../_shared/siiRcvDetect.ts'
 import {
   normalizeHonorariumRows,
   normalizePurchaseRows,
@@ -20,6 +21,8 @@ type Body = {
   periodo?: string
   /** Filas con nombres de columna tal como vienen del SII (CSV/Excel). */
   rows?: Record<string, unknown>[]
+  /** Nombre original del archivo (para detectar RCV compra vs venta). */
+  filename?: string
   /** Solo honorarios: BHE recibidas o BTE emitidas. */
   tipo_boleta?: 'BHE' | 'BTE'
 }
@@ -89,8 +92,15 @@ Deno.serve(async req => {
   const nowIso = new Date().toISOString()
   let count: SyncCount = { inserted: 0, skipped: 0, fetched: 0 }
 
+  const filename = (body.filename ?? '').trim()
+  const { effective: effectiveType, warning: typeWarning, detected } = resolveRcvImportType(
+    importType,
+    rows,
+    filename || undefined,
+  )
+
   try {
-    if (importType === 'compras') {
+    if (effectiveType === 'compras') {
       const docs = await normalizePurchaseRows(ctx, periodo, rows)
       const dbRows = await Promise.all(
         docs.map(async d => ({
@@ -112,7 +122,7 @@ Deno.serve(async req => {
         })),
       )
       count = await upsertIgnore(admin, 'sii_purchase_documents', dbRows)
-    } else if (importType === 'ventas') {
+    } else if (effectiveType === 'ventas') {
       const docs = await normalizeSaleRows(ctx, periodo, rows)
       const dbRows = await Promise.all(
         docs.map(async d => ({
@@ -164,14 +174,17 @@ Deno.serve(async req => {
   }
 
   const patch: Record<string, string> = { last_sync_at: nowIso }
-  if (importType === 'compras') patch.last_sync_compras_at = nowIso
-  if (importType === 'ventas') patch.last_sync_ventas_at = nowIso
-  if (importType === 'honorarios') patch.last_sync_honorarios_at = nowIso
+  if (effectiveType === 'compras') patch.last_sync_compras_at = nowIso
+  if (effectiveType === 'ventas') patch.last_sync_ventas_at = nowIso
+  if (effectiveType === 'honorarios') patch.last_sync_honorarios_at = nowIso
   await admin.from('sii_connections').update(patch).eq('id', connectionId)
 
   return jsonResponse({
     ok: true,
-    import_type: importType,
+    import_type: effectiveType,
+    requested_import_type: importType,
+    detected_kind: detected,
+    type_warning: typeWarning ?? null,
     periodo,
     inserted: count.inserted,
     skipped: count.skipped,

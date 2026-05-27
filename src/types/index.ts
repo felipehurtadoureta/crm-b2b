@@ -293,6 +293,8 @@ export interface BankTransaction {
   trn: string | null
   branch: string | null
   invoice_id: string | null
+  sii_purchase_document_id: string | null
+  sii_sales_document_id: string | null
   glosa: string | null
   notes: string | null
   import_hash: string
@@ -359,6 +361,7 @@ export interface SiiSalesDocument {
   estado_rcv: string | null
   company_id: string | null
   sii_import_hash: string
+  raw?: Record<string, unknown> | null
   synced_at: string
   created_at: string
   updated_at: string

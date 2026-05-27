@@ -314,10 +314,17 @@ export async function updateTransactionGlosa(
   transactionId: string,
   glosa: string | null,
 ): Promise<void> {
-  const { error } = await supabase
-    .from('bank_transactions')
-    .update({ glosa: glosa || null })
-    .eq('id', transactionId)
+  const patch: {
+    glosa: string | null
+    sii_purchase_document_id?: null
+    sii_sales_document_id?: null
+  } = {
+    glosa: glosa || null,
+  }
+  if (glosa !== 'FC') patch.sii_purchase_document_id = null
+  if (glosa !== 'FV') patch.sii_sales_document_id = null
+
+  const { error } = await supabase.from('bank_transactions').update(patch).eq('id', transactionId)
 
   if (error) {
     if (error.code === '42703') {

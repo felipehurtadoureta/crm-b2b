@@ -11,6 +11,10 @@ import { useAuth } from '@/hooks/useAuth'
 import BankCartolaImportDialog from '@/components/bank/BankCartolaImportDialog'
 import BankTransactionGlosaSelect from '@/components/bank/BankTransactionGlosaSelect'
 import BankTransactionNoteInput from '@/components/bank/BankTransactionNoteInput'
+import BankTransactionSiiPurchaseLink from '@/components/bank/BankTransactionSiiPurchaseLink'
+import BankTransactionSiiSalesLink from '@/components/bank/BankTransactionSiiSalesLink'
+import { fetchBankSiiPurchaseContext } from '@/lib/bankSiiPurchaseLink'
+import { fetchBankSiiSalesContext } from '@/lib/bankSiiSalesLink'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -109,6 +113,42 @@ export default function BankBookPage() {
         : b.created_at.localeCompare(a.created_at)
     })
   }, [txQ.data, filtro, glosasQ.data, dateSort])
+
+  const siiPurchaseLinkIds = useMemo(
+    () =>
+      [
+        ...new Set(
+          (txQ.data ?? [])
+            .map(t => t.sii_purchase_document_id)
+            .filter((id): id is string => Boolean(id)),
+        ),
+      ].sort(),
+    [txQ.data],
+  )
+
+  const siiSalesLinkIds = useMemo(
+    () =>
+      [
+        ...new Set(
+          (txQ.data ?? [])
+            .map(t => t.sii_sales_document_id)
+            .filter((id): id is string => Boolean(id)),
+        ),
+      ].sort(),
+    [txQ.data],
+  )
+
+  const siiPaymentQ = useQuery({
+    queryKey: ['bank-sii-purchase-payments', siiPurchaseLinkIds],
+    queryFn: () => fetchBankSiiPurchaseContext(siiPurchaseLinkIds),
+    enabled: siiPurchaseLinkIds.length > 0,
+  })
+
+  const siiCollectionQ = useQuery({
+    queryKey: ['bank-sii-sales-collections', siiSalesLinkIds],
+    queryFn: () => fetchBankSiiSalesContext(siiSalesLinkIds),
+    enabled: siiSalesLinkIds.length > 0,
+  })
 
   const totalAbonos = filtradas.reduce((s, t) => s + Number(t.credit ?? 0), 0)
   const totalCargos = filtradas.reduce((s, t) => s + Number(t.debit ?? 0), 0)
@@ -295,6 +335,7 @@ export default function BankBookPage() {
                 </th>
                 <th className="px-4 py-2.5 font-medium">Descripción</th>
                 <th className="px-4 py-2.5 font-medium min-w-[11rem]">Glosa</th>
+                <th className="px-4 py-2.5 font-medium min-w-[12rem]">Factura SII (FC/FV)</th>
                 <th className="px-4 py-2.5 font-medium text-right">Cargo</th>
                 <th className="px-4 py-2.5 font-medium text-right">Abono</th>
                 <th className="px-4 py-2.5 font-medium min-w-[10rem]">Nota</th>
@@ -314,6 +355,29 @@ export default function BankBookPage() {
                       <span className="text-gray-600 text-xs">
                         {bankGlosaLabel(t.glosa)}
                       </span>
+                    )}
+                  </td>
+                  <td className="px-4 py-2 align-top">
+                    {t.glosa === 'FC' ? (
+                      <BankTransactionSiiPurchaseLink
+                        transactionId={t.id}
+                        glosa={t.glosa}
+                        siiPurchaseDocumentId={t.sii_purchase_document_id}
+                        amount={Number(t.debit ?? 0)}
+                        paymentContext={siiPaymentQ.data}
+                        canEdit={canEdit}
+                      />
+                    ) : t.glosa === 'FV' ? (
+                      <BankTransactionSiiSalesLink
+                        transactionId={t.id}
+                        glosa={t.glosa}
+                        siiSalesDocumentId={t.sii_sales_document_id}
+                        amount={Number(t.credit ?? 0)}
+                        collectionContext={siiCollectionQ.data}
+                        canEdit={canEdit}
+                      />
+                    ) : (
+                      <span className="text-xs text-gray-400">—</span>
                     )}
                   </td>
                   <td className="px-4 py-2 text-right text-red-700 tabular-nums">

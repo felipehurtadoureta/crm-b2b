@@ -27,6 +27,7 @@ import {
   type SiiFileEntry,
   type SiiFileImportType,
 } from '@/lib/siiFileImport'
+import { rcvKindLabel, resolveRcvImportType } from '@/lib/siiRcvDetect'
 import { invokeSiiImport } from '@/lib/siiSync'
 import { cn } from '@/lib/utils'
 
@@ -63,7 +64,9 @@ export default function SiiImportDialog({
   const [batchDetails, setBatchDetails] = useState<SiiBatchImportItem[]>([])
 
   const typeLabel =
-    importType === 'compras' ? 'Compras (RCV recibidos)' : importType === 'ventas' ? 'Ventas (RCV emitidos)' : 'Honorarios'
+    importType === 'honorarios'
+      ? 'Honorarios'
+      : 'RCV Compras y Ventas (detección automática)'
 
   const reset = useCallback(() => {
     setEntries([])
@@ -129,17 +132,21 @@ export default function SiiImportDialog({
         }
         try {
           const parsed = await parseSiiRcvFile(entry.file, entry.periodo)
+          const resolved = resolveRcvImportType(importType, parsed.rows, entry.file.name)
           const r = await invokeSiiImport({
             connection_id: connectionId,
             import_type: importType,
             periodo: entry.periodo,
             rows: parsed.rows,
+            filename: entry.file.name,
           })
           results.push({
             fileName: entry.file.name,
             periodo: entry.periodo,
             inserted: r.inserted,
             skipped: r.skipped,
+            importType: r.import_type,
+            warning: r.type_warning ?? resolved.warning,
           })
         } catch (e) {
           results.push({
@@ -193,8 +200,24 @@ export default function SiiImportDialog({
           <ol className="list-decimal list-inside space-y-1 text-xs text-gray-600">
             <li>Ingrese a <span className="font-medium">www.sii.cl</span> con RUT y clave tributaria.</li>
             <li>Menú <span className="font-medium">Servicios online → Factura electrónica → Registro de compras y ventas</span>.</li>
-            <li>Descargue un archivo por mes ({importType === 'ventas' ? 'Ventas' : 'Compras'}).</li>
-            <li>Puede subir <span className="font-medium">varios archivos a la vez</span> (distintos meses).</li>
+            {importType === 'honorarios' ? (
+              <li>Descargue el archivo de <span className="font-medium">Honorarios</span>.</li>
+            ) : (
+              <>
+                <li>
+                  Descargue el detalle de <span className="font-medium">Compras</span> (RUT Proveedor) o{' '}
+                  <span className="font-medium">Ventas</span> (Rut cliente), por mes.
+                </li>
+                <li>
+                  Puede subir <span className="font-medium">varios archivos a la vez</span> (compras y ventas mezclados).
+                  El sistema detecta el tipo por columnas y nombre (ej. <span className="font-mono">RCV_COMPRA_*</span>,{' '}
+                  <span className="font-mono">RCV_VENTA_*</span>).
+                </li>
+              </>
+            )}
+            {importType === 'honorarios' && (
+              <li>Puede subir <span className="font-medium">varios archivos a la vez</span> (distintos meses).</li>
+            )}
           </ol>
 
           <div className="space-y-1">
@@ -267,6 +290,14 @@ export default function SiiImportDialog({
                     ) : (
                       <>
                         <p className="text-gray-500">{entry.rowCount} filas detectadas</p>
+                        {entry.detectedKind && entry.detectedKind !== 'unknown' && importType !== 'honorarios' && (
+                          <p className="text-gray-500">
+                            Detectado: <span className="font-medium">{rcvKindLabel(entry.detectedKind)}</span>
+                          </p>
+                        )}
+                        {entry.detectedKind === 'unknown' && importType !== 'honorarios' && (
+                          <p className="text-amber-700">Tipo no detectado; se usará la pestaña actual al importar.</p>
+                        )}
                         <div className="flex items-center gap-2">
                           <Label className="text-[10px] text-gray-500 shrink-0">Período</Label>
                           <input
@@ -326,6 +357,10 @@ export default function SiiImportDialog({
                     <>
                       <span className="font-medium">{d.fileName}</span> ({d.periodo}): {d.inserted} nuevos
                       {d.skipped ? `, ${d.skipped} duplicados` : ''}
+                      {d.importType && d.importType !== importType && d.importType !== 'honorarios' && (
+                        <span className="text-amber-700"> → importado como {rcvKindLabel(d.importType)}</span>
+                      )}
+                      {d.warning && <span className="block text-amber-700">{d.warning}</span>}
                     </>
                   )}
                 </li>

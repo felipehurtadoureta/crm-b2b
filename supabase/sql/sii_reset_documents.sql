@@ -1,23 +1,53 @@
 -- =============================================================================
--- Borrar documentos SII importados (para re-importar con fechas corregidas).
--- Ejecutar en Supabase SQL Editor como super_admin de la base.
--- NO borra conexiones ni claves; solo los documentos de las 3 tablas.
+-- Borrar TODOS los documentos SII importados y empezar de cero.
+--
+-- NO borra conexiones SII ni movimientos del libro de banco (solo quita vínculos FC/FV).
+-- Funciona aunque falte la columna sii_sales_document_id en bank_transactions.
+--
+-- Ejecutar en Supabase → SQL Editor.
 -- =============================================================================
 
--- Opcional: solo una conexión (reemplace el UUID)
--- delete from public.sii_purchase_documents where connection_id = 'UUID-AQUI';
--- delete from public.sii_sales_documents where connection_id = 'UUID-AQUI';
--- delete from public.sii_honorarium_receipts where connection_id = 'UUID-AQUI';
+-- 1. Quitar vínculos con facturas SII en el libro de banco (solo columnas que existan)
+do $$
+begin
+  if exists (
+    select 1 from information_schema.columns
+    where table_schema = 'public'
+      and table_name = 'bank_transactions'
+      and column_name = 'sii_purchase_document_id'
+  ) then
+    update public.bank_transactions
+    set sii_purchase_document_id = null
+    where sii_purchase_document_id is not null;
+  end if;
 
--- Todas las conexiones:
-truncate table public.sii_honorarium_receipts;
-truncate table public.sii_sales_documents;
-truncate table public.sii_purchase_documents;
+  if exists (
+    select 1 from information_schema.columns
+    where table_schema = 'public'
+      and table_name = 'bank_transactions'
+      and column_name = 'sii_sales_document_id'
+  ) then
+    update public.bank_transactions
+    set sii_sales_document_id = null
+    where sii_sales_document_id is not null;
+  end if;
+end $$;
 
--- Reinicia marcas de última sync (opcional)
+-- 2. Borrar documentos SII
+delete from public.sii_honorarium_receipts;
+delete from public.sii_sales_documents;
+delete from public.sii_purchase_documents;
+
+-- 3. Reiniciar marcas de última importación
 update public.sii_connections
 set
   last_sync_at = null,
   last_sync_compras_at = null,
   last_sync_ventas_at = null,
   last_sync_honorarios_at = null;
+
+-- Verificación (debe dar 0 en las tres):
+-- select
+--   (select count(*) from sii_purchase_documents) as compras,
+--   (select count(*) from sii_sales_documents) as ventas,
+--   (select count(*) from sii_honorarium_receipts) as honorarios;

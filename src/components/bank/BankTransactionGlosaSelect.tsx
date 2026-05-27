@@ -38,6 +38,10 @@ export default function BankTransactionGlosaSelect({
     mutationFn: (glosa: string | null) => updateTransactionGlosa(transactionId, glosa),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['bank-transactions'] })
+      void queryClient.invalidateQueries({ queryKey: ['bank-sii-purchase-payments'] })
+      void queryClient.invalidateQueries({ queryKey: ['bank-sii-sales-collections'] })
+      void queryClient.invalidateQueries({ queryKey: ['sii-document-purchase-payments'] })
+      void queryClient.invalidateQueries({ queryKey: ['sii-document-sales-collections'] })
     },
     onError: (e: Error) => alert(e.message),
   })

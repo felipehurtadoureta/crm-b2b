@@ -3,12 +3,15 @@
  */
 import * as XLSX from 'xlsx'
 import { normalizeSiiRowDates, periodoToHintMonth } from '@/lib/siiDateParse'
+import { detectRcvKindFromSource, type RcvFileKind } from '@/lib/siiRcvDetect'
 
 export type SiiFileImportType = 'compras' | 'ventas' | 'honorarios'
 
 export type ParsedSiiFile = {
   rows: Record<string, unknown>[]
   warnings: string[]
+  /** Tipo RCV inferido por columnas del archivo (compras vs ventas). */
+  detectedKind: RcvFileKind
 }
 
 function normalizeHeaderCell(v: unknown): string {
@@ -22,7 +25,9 @@ function normalizeHeaderCell(v: unknown): string {
 function isDataHeader(cells: unknown[]): boolean {
   const line = cells.map(normalizeHeaderCell).join(' ')
   if (line.includes('tipo doc') && line.includes('folio')) return true
-  if (line.includes('folio') && (line.includes('rut proveedor') || line.includes('rut receptor'))) return true
+  if (line.includes('folio') && line.includes('rut proveedor')) return true
+  if (line.includes('folio') && (line.includes('rut cliente') || line.includes('rut receptor'))) return true
+  if (line.includes('tipo compra') || line.includes('tipo venta')) return true
   if (line.includes('numero boleta') || line.includes('nro boleta')) return true
   return false
 }
@@ -79,6 +84,7 @@ export async function parseSiiRcvFile(file: File, periodoHint?: string): Promise
   }
 
   const headers = matrix[headerIdx] ?? []
+  const headerKeys = headers.map(h => String(h ?? '').trim()).filter(Boolean)
   if (!isDataHeader(headers)) {
     throw new Error(
       'No se reconoce el formato RCV del SII. Verifique que sea la descarga de Compras o Ventas (debe incluir columnas «Tipo Doc» y «Folio»).',
@@ -93,7 +99,9 @@ export async function parseSiiRcvFile(file: File, periodoHint?: string): Promise
 
   if (rows.length === 0) throw new Error('No hay filas de documentos en el archivo.')
 
-  return { rows, warnings }
+  const detectedKind = detectRcvKindFromSource(rows, file.name, headerKeys)
+
+  return { rows, warnings, detectedKind }
 }
 
 export function fmtSiiImportSummary(r: { inserted: number; skipped: number; fetched: number }): string {
@@ -119,6 +127,7 @@ export type SiiFileEntry = {
   file: File
   periodo: string
   rowCount: number | null
+  detectedKind: RcvFileKind | null
   warnings: string[]
   error: string | null
 }
@@ -133,6 +142,7 @@ export async function buildSiiFileEntry(file: File, defaultPeriodo: string): Pro
       file,
       periodo,
       rowCount: parsed.rows.length,
+      detectedKind: parsed.detectedKind,
       warnings: parsed.warnings,
       error: null,
     }
@@ -142,6 +152,7 @@ export async function buildSiiFileEntry(file: File, defaultPeriodo: string): Pro
       file,
       periodo,
       rowCount: null,
+      detectedKind: null,
       warnings: [],
       error: e instanceof Error ? e.message : String(e),
     }
@@ -153,6 +164,8 @@ export type SiiBatchImportItem = {
   periodo: string
   inserted: number
   skipped: number
+  importType?: SiiFileImportType
+  warning?: string
   error?: string
 }
 

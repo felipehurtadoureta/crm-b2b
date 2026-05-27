@@ -59,9 +59,23 @@ function num(v: unknown): number {
   return Number.isFinite(n) ? n : 0
 }
 
+function normFieldKey(k: string): string {
+  return k
+    .trim()
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+}
+
 function pickField(raw: Record<string, unknown>, ...keys: string[]): string {
-  for (const k of keys) {
-    const v = raw[k]
+  const index = new Map<string, string>()
+  for (const k of Object.keys(raw)) {
+    index.set(normFieldKey(k), k)
+  }
+  for (const candidate of keys) {
+    const orig = index.get(normFieldKey(candidate))
+    if (!orig) continue
+    const v = raw[orig]
     if (v != null && String(v).trim() !== '') return String(v).trim()
   }
   return ''
@@ -176,6 +190,8 @@ export async function normalizeSaleRows(
       raw,
       'RUT Receptor',
       'RUT Cliente',
+      'Rut cliente',
+      'Rut Cliente',
       'rut_receptor',
       'rutReceptor',
       'rut_cliente',
@@ -184,6 +200,8 @@ export async function normalizeSaleRows(
     )
     const razon_social_receptor = pickField(
       raw,
+      'Razon Social Cliente',
+      'Razón Social Cliente',
       'Razon Social',
       'Razón Social',
       'razon_social',

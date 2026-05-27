@@ -52,6 +52,9 @@ async function formatFunctionError(err: unknown, fnName: string): Promise<string
 export type SiiImportResult = {
   ok: boolean
   import_type: SiiImportType
+  requested_import_type?: SiiImportType
+  detected_kind?: string
+  type_warning?: string | null
   periodo: string
   inserted: number
   skipped: number
@@ -64,6 +67,7 @@ export async function invokeSiiImport(input: {
   import_type: SiiImportType
   periodo: string
   rows: Record<string, unknown>[]
+  filename?: string
   tipo_boleta?: 'BHE' | 'BTE'
 }): Promise<SiiImportResult> {
   const { data, error } = await supabase.functions.invoke('sii-import', { body: input })
