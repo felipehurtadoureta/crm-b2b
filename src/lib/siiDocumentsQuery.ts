@@ -50,7 +50,7 @@ export async function fetchSiiPurchaseDocuments(filter: SiiDocumentsFilter = {})
   let q = supabase
     .from('sii_purchase_documents')
     .select(
-      'id, connection_id, periodo, tipo_dte, folio, fecha_emision, rut_emisor, razon_social_emisor, monto_neto, monto_iva, monto_total, estado_rcv, company_id, sii_import_hash, synced_at, created_at, updated_at',
+      'id, connection_id, periodo, tipo_dte, folio, fecha_emision, rut_emisor, razon_social_emisor, monto_neto, monto_iva, monto_total, estado_rcv, company_id, sii_import_hash, raw, synced_at, created_at, updated_at',
     )
     .order('fecha_emision', { ascending: false })
     .limit(500)

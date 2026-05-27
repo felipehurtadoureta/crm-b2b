@@ -2,6 +2,7 @@
  * Lee archivos RCV del SII (CSV o Excel) exportados desde el portal www.sii.cl.
  */
 import * as XLSX from 'xlsx'
+import { normalizeSiiRowDates, periodoToHintMonth } from '@/lib/siiDateParse'
 
 export type SiiFileImportType = 'compras' | 'ventas' | 'honorarios'
 
@@ -47,8 +48,9 @@ function rowToObject(headers: unknown[], values: unknown[]): Record<string, unkn
 }
 
 /** Parsea CSV/Excel del SII a filas con columnas originales. */
-export async function parseSiiRcvFile(file: File): Promise<ParsedSiiFile> {
+export async function parseSiiRcvFile(file: File, periodoHint?: string): Promise<ParsedSiiFile> {
   const warnings: string[] = []
+  const hintMonth = periodoHint ? periodoToHintMonth(periodoHint) : null
   const ext = file.name.split('.').pop()?.toLowerCase() ?? ''
   if (!['csv', 'xlsx', 'xls'].includes(ext)) {
     throw new Error('Formato no válido. Use CSV, .xlsx o .xls exportado desde el SII.')
@@ -58,7 +60,7 @@ export async function parseSiiRcvFile(file: File): Promise<ParsedSiiFile> {
   const wb =
     ext === 'csv'
       ? XLSX.read(new TextDecoder('utf-8').decode(buf), { type: 'string', FS: ';', raw: false })
-      : XLSX.read(buf, { type: 'array', raw: false })
+      : XLSX.read(buf, { type: 'array', cellDates: true, raw: false })
 
   const sheetName = wb.SheetNames[0]
   if (!sheetName) throw new Error('El archivo no tiene hojas de datos.')
@@ -86,7 +88,7 @@ export async function parseSiiRcvFile(file: File): Promise<ParsedSiiFile> {
   const rows: Record<string, unknown>[] = []
   for (let i = headerIdx + 1; i < matrix.length; i++) {
     const obj = rowToObject(headers, matrix[i] ?? [])
-    if (obj) rows.push(obj)
+    if (obj) rows.push(normalizeSiiRowDates(obj, hintMonth))
   }
 
   if (rows.length === 0) throw new Error('No hay filas de documentos en el archivo.')
@@ -123,12 +125,13 @@ export type SiiFileEntry = {
 
 export async function buildSiiFileEntry(file: File, defaultPeriodo: string): Promise<SiiFileEntry> {
   const id = `${file.name}-${file.size}-${file.lastModified}`
+  const periodo = guessPeriodoFromFilename(file.name) ?? defaultPeriodo
   try {
-    const parsed = await parseSiiRcvFile(file)
+    const parsed = await parseSiiRcvFile(file, periodo)
     return {
       id,
       file,
-      periodo: guessPeriodoFromFilename(file.name) ?? defaultPeriodo,
+      periodo,
       rowCount: parsed.rows.length,
       warnings: parsed.warnings,
       error: null,
@@ -137,7 +140,7 @@ export async function buildSiiFileEntry(file: File, defaultPeriodo: string): Pro
     return {
       id,
       file,
-      periodo: guessPeriodoFromFilename(file.name) ?? defaultPeriodo,
+      periodo,
       rowCount: null,
       warnings: [],
       error: e instanceof Error ? e.message : String(e),

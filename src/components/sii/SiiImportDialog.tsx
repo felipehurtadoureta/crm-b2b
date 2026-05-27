@@ -128,7 +128,7 @@ export default function SiiImportDialog({
           continue
         }
         try {
-          const parsed = await parseSiiRcvFile(entry.file)
+          const parsed = await parseSiiRcvFile(entry.file, entry.periodo)
           const r = await invokeSiiImport({
             connection_id: connectionId,
             import_type: importType,

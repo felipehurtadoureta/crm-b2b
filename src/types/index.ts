@@ -337,6 +337,7 @@ export interface SiiPurchaseDocument {
   estado_rcv: string | null
   company_id: string | null
   sii_import_hash: string
+  raw?: Record<string, unknown> | null
   synced_at: string
   created_at: string
   updated_at: string

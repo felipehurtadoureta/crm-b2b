@@ -1,4 +1,5 @@
 import { sha256Hex } from './siiCrypto.ts'
+import { parseSiiDateValueOrToday, periodoToHintMonth } from './siiDateParse.ts'
 
 export type NormalizedPurchase = {
   periodo: string
@@ -66,15 +67,12 @@ function pickField(raw: Record<string, unknown>, ...keys: string[]): string {
   return ''
 }
 
-function parseChileanDate(d: string): string {
-  const s = d.trim()
-  const m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/)
-  if (m) return `${m[3]}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}`
-  if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10)
-  return s.slice(0, 10) || new Date().toISOString().slice(0, 10)
+function parseChileanDate(d: string, hintMonth: number | null): string {
+  return parseSiiDateValueOrToday(d, hintMonth)
 }
 
-function pickDate(raw: Record<string, unknown>): string {
+function pickDate(raw: Record<string, unknown>, periodo?: string): string {
+  const hintMonth = periodo ? periodoToHintMonth(periodo) : null
   const d = pickField(
     raw,
     'Fecha Docto',
@@ -86,7 +84,7 @@ function pickDate(raw: Record<string, unknown>): string {
     'FchEmis',
     'fechaDocto',
   )
-  return parseChileanDate(d)
+  return parseChileanDate(d, hintMonth)
 }
 
 function pickTipo(raw: Record<string, unknown>): string {
@@ -110,7 +108,7 @@ export async function normalizePurchaseRows(
   for (const raw of docs) {
     const tipo_dte = pickTipo(raw)
     const folio = pickFolio(raw)
-    const fecha_emision = pickDate(raw)
+    const fecha_emision = pickDate(raw, periodo)
     const rut_emisor = pickField(
       raw,
       'RUT Proveedor',
@@ -173,7 +171,7 @@ export async function normalizeSaleRows(
   for (const raw of docs) {
     const tipo_dte = pickTipo(raw)
     const folio = pickFolio(raw)
-    const fecha_emision = pickDate(raw)
+    const fecha_emision = pickDate(raw, periodo)
     const rut_receptor = pickField(
       raw,
       'RUT Receptor',
@@ -234,7 +232,7 @@ function mapHonorariumRaw(
   tipo_boleta: 'BHE' | 'BTE',
 ): Promise<NormalizedHonorarium> {
   const numero_boleta = pickField(raw, 'Folio', 'folio', 'numero_boleta', 'numeroBoleta', 'nro_boleta', 'NroBoleta')
-  const fecha = pickDate(raw)
+  const fecha = pickDate(raw, periodo)
   const rut_prestador = pickField(
     raw,
     'RUT Emisor',
