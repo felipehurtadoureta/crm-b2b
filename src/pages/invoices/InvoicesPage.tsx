@@ -1,5 +1,5 @@
-import { useMemo, useState } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
+import { useEffect, useMemo, useState } from 'react'
+import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   fetchInvoicesList,
@@ -29,6 +29,7 @@ const STATUS_CLASS: Record<string, string> = {
 
 export default function InvoicesPage() {
   const navigate = useNavigate()
+  const [searchParams, setSearchParams] = useSearchParams()
   const { profile } = useAuth()
   const queryClient = useQueryClient()
   const [search, setSearch] = useState('')
@@ -36,6 +37,8 @@ export default function InvoicesPage() {
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [editInvoice, setEditInvoice] = useState<InvoiceListRow | null>(null)
   const [deletingId, setDeletingId] = useState<string | null>(null)
+  const companyFilter = searchParams.get('company')
+  const invoiceFromQuery = searchParams.get('invoice')
 
   const canEdit = profile?.role !== 'reader'
 
@@ -52,6 +55,7 @@ export default function InvoicesPage() {
   const filtered = useMemo(() => {
     const term = search.trim().toLowerCase()
     return invoices.filter(inv => {
+      if (companyFilter && inv.company_id !== companyFilter) return false
       if (statusFilter !== 'all' && inv.status !== statusFilter) return false
       if (!term) return true
       return (
@@ -62,7 +66,19 @@ export default function InvoicesPage() {
         || (inv.notes ?? '').toLowerCase().includes(term)
       )
     })
-  }, [invoices, search, statusFilter])
+  }, [invoices, search, statusFilter, companyFilter])
+
+  const companyLabel = useMemo(() => {
+    if (!companyFilter) return null
+    return invoices.find(inv => inv.company_id === companyFilter)?.companies?.name ?? null
+  }, [companyFilter, invoices])
+
+  useEffect(() => {
+    if (!invoiceFromQuery) return
+    if (selectedId === invoiceFromQuery) return
+    const exists = invoices.some(inv => inv.id === invoiceFromQuery)
+    if (exists) setSelectedId(invoiceFromQuery)
+  }, [invoiceFromQuery, invoices, selectedId])
 
   const counts = useMemo(() => {
     const c: Record<string, number> = { all: invoices.length }
@@ -116,6 +132,29 @@ export default function InvoicesPage() {
         <p className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">
           {(error as Error).message}
         </p>
+      )}
+
+      {companyFilter && (
+        <div className="flex flex-wrap items-center gap-2 rounded-lg border border-blue-200 bg-blue-50/80 px-3 py-2">
+          <span className="text-xs text-blue-900">
+            Filtrando por empresa: <strong>{companyLabel ?? companyFilter}</strong>
+          </span>
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            className="h-7 text-xs"
+            onClick={() => {
+              const next = new URLSearchParams(searchParams)
+              next.delete('company')
+              next.delete('invoice')
+              setSelectedId(null)
+              setSearchParams(next)
+            }}
+          >
+            Ver todas
+          </Button>
+        </div>
       )}
 
       {selected && canEdit && (

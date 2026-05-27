@@ -158,7 +158,10 @@ export default function QuotePrintView({ quoteId, onClose }: Props) {
   if (!quote) return null
 
   const stage = quote.stage ?? quote.status ?? ''
-  const isFacturada  = stage === 'facturada' || stage === 'orden_de_venta'
+  const isFacturada =
+    stage === 'facturada' ||
+    stage === 'orden_de_venta' ||
+    (stage === 'pendiente_facturar' && !!(quote as { closed_at?: string | null }).closed_at)
   const sym          = SYMBOL[quote.currency] ?? '$'
   const cur          = quote.currency
   const title        = isFacturada ? 'FACTURA / CIERRE' : 'COTIZACIÓN'

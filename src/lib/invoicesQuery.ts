@@ -66,7 +66,7 @@ export function invoicesListQueryKey() {
 
 /** Ficha empresa v2: pestaña Facturas en seguimiento comercial con factura preseleccionada. */
 export function companyInvoiceFollowupHref(companyId: string, invoiceId: string): string {
-  const q = new URLSearchParams({ cfTab: 'invoices', cfInvoiceId: invoiceId })
+  const q = new URLSearchParams({ cfInvoiceId: invoiceId })
   return `/companies/${companyId}/v2?${q.toString()}#seccion-seguimientos`
 }
 

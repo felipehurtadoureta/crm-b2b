@@ -258,6 +258,8 @@ export interface CompanyCommercialFollowupsSectionProps {
   initialMainTab?: MainTab | null
   /** Desde la URL (`?cfInvoiceId=`), preselecciona la factura en seguimiento comercial. */
   initialInvoiceId?: string | null
+  /** Desde SII (`?siiSalesId=`), selecciona la factura técnica asociada al documento RCV de ventas. */
+  initialSiiSalesDocumentId?: string | null
   /** Sincroniza el gestor de documentos (destino y cotización/factura elegida en este módulo). */
   onDocumentLinkContextChange?: (ctx: CommercialFollowupsDocumentSync) => void
   /** Por encima de modales padre (p. ej. cotización en z-50). */
@@ -274,6 +276,7 @@ export default function CompanyCommercialFollowupsSection({
   embeddedQuoteContext = null,
   initialMainTab = null,
   initialInvoiceId = null,
+  initialSiiSalesDocumentId = null,
   onDocumentLinkContextChange,
   overlayZIndex = 50,
 }: CompanyCommercialFollowupsSectionProps) {
@@ -328,8 +331,16 @@ export default function CompanyCommercialFollowupsSection({
       setInvoiceId(initialInvoiceId)
       return
     }
-    setInvoiceId(list[0].id)
-  }, [mainTab, invoicesQ.data, invoiceId, initialInvoiceId])
+    if (
+      initialSiiSalesDocumentId &&
+      list.some(i => i.sii_sales_document_id === initialSiiSalesDocumentId)
+    ) {
+      const match = list.find(i => i.sii_sales_document_id === initialSiiSalesDocumentId)
+      setInvoiceId(match?.id ?? null)
+      return
+    }
+    setInvoiceId(list[0]?.id ?? null)
+  }, [mainTab, invoicesQ.data, invoiceId, initialInvoiceId, initialSiiSalesDocumentId])
 
   const subjectType = useMemo((): 'company' | 'quote' | 'invoice' => {
     if (embedded) return 'quote'
@@ -718,7 +729,7 @@ export default function CompanyCommercialFollowupsSection({
           <div className="flex flex-nowrap items-center justify-end gap-1.5 min-w-0 overflow-x-auto pb-px">
             {tabBtn('company', 'Llamados')}
             {tabBtn('quotes', 'Cotizaciones')}
-            {tabBtn('invoices', 'Facturas')}
+            {tabBtn('invoices', 'Facturas (SII)')}
           </div>
         )}
       </div>
@@ -773,9 +784,20 @@ export default function CompanyCommercialFollowupsSection({
           </div>
         )}
 
+        {invoicesQ.isError && mainTab === 'invoices' && !embedded && (
+          <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-800">
+            {(invoicesQ.error as Error).message}
+          </div>
+        )}
+
         {mainTab === 'invoices' && !embedded && (
           <div className="flex flex-col gap-1 sm:flex-row sm:items-center flex-wrap pb-1">
-            <label className="text-xs font-medium text-gray-600 shrink-0">Factura</label>
+            <label className="text-xs font-medium text-gray-600 shrink-0">
+              Factura SII
+              {(invoicesQ.data?.length ?? 0) > 0 && (
+                <span className="ml-1 font-normal text-gray-400">({invoicesQ.data?.length})</span>
+              )}
+            </label>
             <select
               className="text-sm border border-gray-200 rounded-lg px-2 py-1.5 bg-white max-w-md w-full sm:w-auto"
               value={invoiceId ?? ''}
@@ -783,17 +805,27 @@ export default function CompanyCommercialFollowupsSection({
               disabled={invoicesQ.isLoading || (invoicesQ.data?.length ?? 0) === 0}
             >
               {(invoicesQ.data ?? []).length === 0 ? (
-                <option value="">Sin facturas (cree una en la sección Facturas)</option>
+                <option value="">
+                  {invoicesQ.isLoading
+                    ? 'Cargando…'
+                    : 'Sin facturas SII vinculadas a esta empresa'}
+                </option>
               ) : (
                 (invoicesQ.data ?? []).map(inv => (
                   <option key={inv.id} value={inv.id}>
-                    {inv.invoice_number} · {inv.status}
-                    {inv.status === 'pagada' || inv.status === 'anulada' ? ' — cerrada' : ''}
+                    Folio {inv.invoice_number} · {inv.status} ·{' '}
+                    {Number(inv.total).toLocaleString('es-CL')} {inv.currency}
                   </option>
                 ))
               )}
             </select>
-            {invoicesQ.isLoading && <span className="text-xs text-gray-400">Cargando facturas…</span>}
+            {invoicesQ.isLoading && <span className="text-xs text-gray-400">Cargando facturas SII…</span>}
+            <Link
+              to="/sii"
+              className="text-xs text-violet-700 hover:text-violet-900 font-medium underline-offset-2 hover:underline shrink-0"
+            >
+              Abrir SII (RCV)
+            </Link>
           </div>
         )}
 

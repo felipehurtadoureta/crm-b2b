@@ -1,5 +1,5 @@
--- Permite etapa facturada en cotizaciones (antes solo existía orden_de_venta en algunos proyectos).
--- Ejecutar en Supabase SQL Editor si falla: quotes_stage_check al facturar.
+-- Etapa intermedia: cotización aceptada para facturar en SII, pendiente de vincular folio.
+-- Ejecutar en Supabase SQL Editor después de quotes_stage_facturada_check.sql.
 
 alter table public.quotes drop constraint if exists quotes_stage_check;
 
@@ -17,7 +17,3 @@ alter table public.quotes
       'orden_de_venta'
     )
   );
-
-update public.quotes
-set stage = 'facturada'
-where stage = 'orden_de_venta';

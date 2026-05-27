@@ -1,7 +1,6 @@
 // Ficha empresa (v2): seguimientos comerciales, contactos, cotizaciones, facturas y documentos
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { supabase } from '@/lib/supabase'
 import type { Company, Contact, Profile, Quote } from '@/types'
 import { useAuth } from '@/hooks/useAuth'
@@ -15,8 +14,6 @@ import CompanyCommercialFollowupsSection, {
 import CompanyDocumentsSection from '@/components/companies/CompanyDocumentsSection'
 import CompanyDialog from './CompanyDialog'
 import ContactDialog from '@/pages/contacts/ContactDialog'
-import { cfInvoicesQueryKey, insertInvoice } from '@/hooks/useCommercialFollowups'
-import { fetchInvoicesByCompany } from '@/lib/commercialFollowupsQuery'
 import {
   ArrowLeft,
   Building2,
@@ -54,35 +51,11 @@ function scrollToCompanySection(id: string) {
 const FICHA_ACTION_BTN =
   'inline-flex items-center gap-1.5 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-xs font-medium text-gray-800 hover:bg-gray-100 transition-colors shrink-0'
 
-function CompanyInvoicesHint({ companyId }: { companyId: string }) {
-  const { data, isLoading, error } = useQuery({
-    queryKey: cfInvoicesQueryKey(companyId),
-    queryFn: () => fetchInvoicesByCompany(companyId),
-    enabled: Boolean(companyId),
-  })
-
-  if (isLoading) return <p className="text-sm text-gray-400">Cargando facturas…</p>
-  if (error) return <p className="text-xs text-red-600">{(error as Error).message}</p>
-  if (!data?.length) return <p className="text-sm text-gray-400">Sin facturas. Use «Nueva factura» para crear la primera.</p>
-
-  return (
-    <ul className="divide-y divide-gray-100 border border-gray-100 rounded-lg max-h-48 overflow-y-auto">
-      {data.map(inv => (
-        <li key={inv.id} className="px-3 py-2 text-sm flex justify-between gap-2">
-          <span className="font-medium text-gray-900">{inv.invoice_number}</span>
-          <span className="text-xs text-gray-500">{inv.status}</span>
-        </li>
-      ))}
-    </ul>
-  )
-}
-
 export default function CompanyWorkspacePageV2() {
   const { companyId } = useParams<{ companyId: string }>()
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
   const { profile } = useAuth()
-  const queryClient = useQueryClient()
 
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState<string | null>(null)
@@ -96,10 +69,6 @@ export default function CompanyWorkspacePageV2() {
   const [companyDialogOpen, setCompanyDialogOpen] = useState(false)
   const [contactDialogOpen, setContactDialogOpen] = useState(false)
   const [selectedContact, setSelectedContact] = useState<Contact | null>(null)
-
-  const [invOpen, setInvOpen] = useState(false)
-  const [invNumber, setInvNumber] = useState('')
-  const [invTitle, setInvTitle] = useState('')
   const [datosEmpresaAbierto, setDatosEmpresaAbierto] = useState(false)
 
   const canEdit = profile?.role !== 'reader'
@@ -117,14 +86,18 @@ export default function CompanyWorkspacePageV2() {
     return raw || null
   }, [searchParams])
 
+  const initialFollowupSiiSalesId = useMemo(() => {
+    const raw = (searchParams.get('siiSalesId') ?? '').trim()
+    return raw || null
+  }, [searchParams])
+
   const initialFollowupMainTab = useMemo((): 'company' | 'quotes' | 'invoices' | null => {
-    if (initialFollowupInvoiceId) return 'invoices'
+    if (initialFollowupInvoiceId || initialFollowupSiiSalesId) return 'invoices'
     const raw = (searchParams.get('cfTab') ?? '').trim().toLowerCase()
     if (raw === 'quotes' || raw === 'cotizaciones' || raw === 'cotización') return 'quotes'
-    if (raw === 'invoices' || raw === 'facturas' || raw === 'factura') return 'invoices'
     if (raw === 'company' || raw === 'llamados' || raw === 'llamado') return 'company'
     return null
-  }, [searchParams, initialFollowupInvoiceId])
+  }, [searchParams, initialFollowupInvoiceId, initialFollowupSiiSalesId])
 
   useEffect(() => {
     if (!initialFollowupInvoiceId || loading) return
@@ -190,22 +163,6 @@ export default function CompanyWorkspacePageV2() {
   useEffect(() => {
     void load()
   }, [load])
-
-  const invMut = useMutation({
-    mutationFn: () =>
-      insertInvoice({
-        company_id: company!.id,
-        invoice_number: invNumber.trim(),
-        title: invTitle.trim() || null,
-        status: 'pendiente',
-      }),
-    onSuccess: () => {
-      setInvOpen(false)
-      setInvNumber('')
-      setInvTitle('')
-      void queryClient.invalidateQueries({ queryKey: cfInvoicesQueryKey(company!.id) })
-    },
-  })
 
   const statusStyle: Record<string, string> = {
     activo: 'bg-green-100 text-green-800',
@@ -303,6 +260,7 @@ export default function CompanyWorkspacePageV2() {
         canEdit={canEdit}
         initialMainTab={initialFollowupMainTab ?? undefined}
         initialInvoiceId={initialFollowupInvoiceId}
+        initialSiiSalesDocumentId={initialFollowupSiiSalesId}
         onDocumentLinkContextChange={onFollowupDocumentContextChange}
       />
 
@@ -355,17 +313,16 @@ export default function CompanyWorkspacePageV2() {
         <section id="seccion-facturas-lista" className="rounded-xl border border-gray-200 bg-white overflow-hidden shadow-sm scroll-mt-6">
           <div className="px-4 py-3 border-b bg-gray-50 flex items-center justify-between gap-2">
             <h2 className="text-sm font-semibold text-gray-800">Facturas</h2>
-            {canEdit && (
-              <button type="button" className={FICHA_ACTION_BTN} onClick={() => setInvOpen(true)}>
-                <Plus size={12} /> Nueva factura
-              </button>
-            )}
+            <Link to="/sii" className={FICHA_ACTION_BTN}>
+              Abrir SII (RCV)
+            </Link>
           </div>
           <div className="p-4">
             <p className="text-xs text-gray-500 mb-3">
-              Registro básico para enlazar seguimientos y adjuntos desde el gestor de documentos.
+              La fuente de facturas para cobranza es SII (RCV Ventas).
+              El seguimiento comercial de cobranza se mantiene en «Seguimiento comercial»
+              y se asocia a la factura seleccionada.
             </p>
-            <CompanyInvoicesHint companyId={company.id} />
           </div>
         </section>
       </div>
@@ -531,40 +488,6 @@ export default function CompanyWorkspacePageV2() {
           </dl>
         </DialogContent>
       </Dialog>
-      {invOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" role="dialog" aria-modal>
-          <div className="bg-white rounded-xl shadow-lg max-w-md w-full p-4 space-y-3">
-            <h3 className="text-sm font-semibold text-gray-900">Nueva factura</h3>
-            <div>
-              <label className="text-[10px] uppercase text-gray-500">Número</label>
-              <input
-                className="mt-0.5 w-full text-sm border rounded-lg px-2 py-1.5"
-                value={invNumber}
-                onChange={e => setInvNumber(e.target.value)}
-                placeholder="F-0001"
-              />
-            </div>
-            <div>
-              <label className="text-[10px] uppercase text-gray-500">Título (opcional)</label>
-              <input
-                className="mt-0.5 w-full text-sm border rounded-lg px-2 py-1.5"
-                value={invTitle}
-                onChange={e => setInvTitle(e.target.value)}
-              />
-            </div>
-            {invMut.isError && <p className="text-xs text-red-600">{(invMut.error as Error).message}</p>}
-            <div className="flex justify-end gap-2">
-              <Button type="button" variant="outline" size="sm" onClick={() => setInvOpen(false)}>
-                Cancelar
-              </Button>
-              <Button type="button" size="sm" disabled={!invNumber.trim() || invMut.isPending} onClick={() => invMut.mutate()}>
-                Guardar
-              </Button>
-            </div>
-          </div>
-        </div>
-      )}
-
       <CompanyDialog
         open={companyDialogOpen}
         onClose={() => setCompanyDialogOpen(false)}

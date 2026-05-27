@@ -3,6 +3,10 @@
  */
 import type { QueryClient } from '@tanstack/react-query'
 import { supabase } from '@/lib/supabase'
+import { computeSiiSalesCollectionStatus, fetchSiiSalesCollectedTotals } from '@/lib/bankSiiSalesLink'
+import { partitionVentas } from '@/lib/siiSalesSubtabs'
+import { siiDteTypeLabel } from '@/lib/siiDocumentsQuery'
+import type { SiiSalesDocument } from '@/types'
 import {
   normalizeQuoteStage,
   QUOTE_FOLLOWUP_CLOSED_STAGES,
@@ -406,18 +410,156 @@ export async function updateCommercialReminderDueDate(reminderId: string, dueDat
   }
 }
 
-export async function fetchInvoicesByCompany(companyId: string): Promise<Invoice[]> {
+/** Facturas de venta SII vinculadas a la empresa (misma fuente que SII RCV → Ventas). */
+export async function fetchSiiSalesDocumentsForCompany(companyId: string): Promise<SiiSalesDocument[]> {
   const { data, error } = await supabase
-    .from('invoices')
+    .from('sii_sales_documents')
     .select('*')
     .eq('company_id', companyId)
-    .order('created_at', { ascending: false })
+    .order('fecha_emision', { ascending: false })
+    .limit(500)
 
   if (error) {
     if (error.code === '42P01') return []
     throw new Error(error.message)
   }
-  return (data ?? []) as Invoice[]
+
+  const docs = (data ?? []) as SiiSalesDocument[]
+  const partition = partitionVentas(docs)
+  // Solo facturas/documentos de venta vigentes: excluye NC, guías y facturas afectadas por NC.
+  return partition.documentos
+}
+
+/** Crea o reutiliza fila técnica en `invoices` para el seguimiento comercial (FK). */
+export async function ensureInvoiceForSiiSalesDoc(
+  companyId: string,
+  doc: SiiSalesDocument,
+  collected: number,
+): Promise<Invoice | null> {
+  const total = Math.round(Number(doc.monto_total ?? 0))
+  const status: InvoiceStatus =
+    computeSiiSalesCollectionStatus(total, collected).tone === 'paid' ? 'pagada' : 'pendiente'
+  const title = `${siiDteTypeLabel(doc.tipo_dte)} ${doc.folio}`
+
+  const patch = {
+    company_id: companyId,
+    title,
+    status,
+    total,
+    currency: 'CLP' as const,
+    paid_at: status === 'pagada' ? new Date().toISOString() : null,
+  }
+
+  const { data: bySii, error: bySiiErr } = await supabase
+    .from('invoices')
+    .select('*')
+    .eq('sii_sales_document_id', doc.id)
+    .maybeSingle()
+
+  if (!bySiiErr && bySii) {
+    const current = bySii as Invoice
+    if (current.status !== patch.status || current.total !== patch.total) {
+      const { data: updated, error: upErr } = await supabase
+        .from('invoices')
+        .update(patch)
+        .eq('id', current.id)
+        .select('*')
+        .single()
+      if (!upErr && updated) return updated as Invoice
+    }
+    return current
+  }
+
+  if (bySiiErr && bySiiErr.code === '42703') {
+    const { data: byFolio, error: folioErr } = await supabase
+      .from('invoices')
+      .select('*')
+      .eq('company_id', companyId)
+      .eq('invoice_number', doc.folio)
+      .maybeSingle()
+
+    if (!folioErr && byFolio) return byFolio as Invoice
+
+    const { data: inserted, error: insErr } = await supabase
+      .from('invoices')
+      .insert({
+        ...patch,
+        quote_id: null,
+        invoice_number: doc.folio,
+        notes: 'Vinculada desde SII (RCV Ventas).',
+      })
+      .select('*')
+      .single()
+
+    if (insErr) {
+      console.warn('[ensureInvoiceForSiiSalesDoc]', insErr.message)
+      return null
+    }
+    return inserted as Invoice
+  }
+
+  if (bySiiErr && bySiiErr.code !== 'PGRST116') {
+    if (bySiiErr.code === '42P01') return null
+    throw new Error(bySiiErr.message)
+  }
+
+  const { data: byFolio } = await supabase
+    .from('invoices')
+    .select('*')
+    .eq('company_id', companyId)
+    .eq('invoice_number', doc.folio)
+    .maybeSingle()
+
+  if (byFolio) {
+    const current = byFolio as Invoice
+    await supabase
+      .from('invoices')
+      .update({ ...patch, sii_sales_document_id: doc.id })
+      .eq('id', current.id)
+    return { ...current, ...patch, sii_sales_document_id: doc.id }
+  }
+
+  const { data: inserted, error: insErr } = await supabase
+    .from('invoices')
+    .insert({
+      ...patch,
+      quote_id: null,
+      sii_sales_document_id: doc.id,
+      invoice_number: doc.folio,
+      notes: 'Vinculada desde SII (RCV Ventas).',
+    })
+    .select('*')
+    .single()
+
+  if (insErr) {
+    if (insErr.code === '23505') {
+      const { data: again } = await supabase
+        .from('invoices')
+        .select('*')
+        .eq('sii_sales_document_id', doc.id)
+        .maybeSingle()
+      return (again as Invoice | null) ?? null
+    }
+    console.warn('[ensureInvoiceForSiiSalesDoc]', insErr.message)
+    return null
+  }
+
+  return inserted as Invoice
+}
+
+export async function fetchInvoicesByCompany(companyId: string): Promise<Invoice[]> {
+  const docs = await fetchSiiSalesDocumentsForCompany(companyId)
+  if (docs.length === 0) return []
+
+  const collectedById = await fetchSiiSalesCollectedTotals(docs.map(d => d.id))
+
+  const invoices: Invoice[] = []
+  for (const doc of docs) {
+    const inv = await ensureInvoiceForSiiSalesDoc(companyId, doc, collectedById.get(doc.id) ?? 0)
+    if (inv) invoices.push(inv)
+  }
+
+  return invoices
 }
 
 export async function insertInvoice(row: {
@@ -548,7 +690,7 @@ export async function reopenQuoteNegotiationStage(quoteId: string): Promise<void
     .from('quotes')
     .update({ stage: 'en_negociacion', closed_at: null })
     .eq('id', quoteId)
-    .in('stage', ['aceptada', 'rechazada', 'facturada', 'orden_de_venta'])
+    .in('stage', ['aceptada', 'rechazada', 'facturada', 'orden_de_venta', 'pendiente_facturar'])
 
   if (error) throw new Error(error.message)
 

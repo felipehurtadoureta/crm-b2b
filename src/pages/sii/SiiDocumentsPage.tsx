@@ -547,12 +547,35 @@ export default function SiiDocumentsPage() {
   )
 }
 
-function CompanyLink({ companyId }: { companyId: string | null }) {
+function CompanyLink({ companyId, href }: { companyId: string | null; href?: string }) {
   if (!companyId) return <>—</>
   return (
-    <Link to={`/companies/${companyId}`} className="text-blue-600 hover:underline">
+    <Link to={href ?? `/companies/${companyId}`} className="text-blue-600 hover:underline">
       Empresa
     </Link>
+  )
+}
+
+function SalesFollowupLink({
+  companyId,
+  salesDocumentId,
+}: {
+  companyId: string | null
+  salesDocumentId: string
+}) {
+  if (!companyId) return <>—</>
+  return (
+    <div className="flex flex-col gap-0.5">
+      <Link to={`/companies/${companyId}`} className="text-blue-600 hover:underline">
+        Empresa
+      </Link>
+      <Link
+        to={`/companies/${companyId}/v2?siiSalesId=${encodeURIComponent(salesDocumentId)}#seccion-seguimientos`}
+        className="text-violet-700 hover:underline"
+      >
+        Abrir seguimiento
+      </Link>
+    </div>
   )
 }
 
@@ -585,7 +608,7 @@ function PurchaseRow({
       </TableCell>
       <TableCell className="text-xs text-gray-500">{row.estado_rcv ?? '—'}</TableCell>
       <TableCell className="text-xs">
-        <CompanyLink companyId={row.company_id} />
+        <SalesFollowupLink companyId={row.company_id} salesDocumentId={row.id} />
       </TableCell>
     </TableRow>
   )
@@ -683,7 +706,7 @@ function NotasCreditoVentaTable({
                   </TableCell>
                   <TableCell className="text-xs text-gray-500">{factura.estado_rcv ?? '—'}</TableCell>
                   <TableCell className="text-xs">
-                    <CompanyLink companyId={factura.company_id} />
+                    <SalesFollowupLink companyId={factura.company_id} salesDocumentId={factura.id} />
                   </TableCell>
                 </TableRow>
               )}
@@ -712,7 +735,7 @@ function NotasCreditoVentaTable({
                 <TableCell className="text-xs text-gray-400">—</TableCell>
                 <TableCell className="text-xs text-gray-500">{nota.estado_rcv ?? '—'}</TableCell>
                 <TableCell className="text-xs">
-                  <CompanyLink companyId={nota.company_id} />
+                  <SalesFollowupLink companyId={nota.company_id} salesDocumentId={nota.id} />
                 </TableCell>
               </TableRow>
             </Fragment>

@@ -10,8 +10,14 @@ import {
   fetchOpenCommercialRemindersInRange,
   normalizeNextChannel,
 } from '@/lib/commercialFollowupsQuery'
+import {
+  currentBillingPeriod,
+  formatBillingPeriodLabel,
+  rentalAlertDate,
+  shouldShowRentalAlert,
+} from '@/lib/quoteRentalBilling'
 
-export type PendienteFuente = 'quote_close' | 'crm_task' | 'followup'
+export type PendienteFuente = 'quote_close' | 'crm_task' | 'followup' | 'rental_billing'
 
 export interface PendienteItem {
   /** Clave estable para React (incluye fuente para no colisionar ids de tablas distintas) */
@@ -41,6 +47,11 @@ export interface PendienteItem {
   followupImportance?: CommercialFollowupImportance
   /** Cotización «dueña» para comprobar permisos KAM en acciones de agenda */
   quoteKamId?: string
+  /** Período YYYY-MM de la mensualidad pendiente (arriendo) */
+  rentalBillingPeriod?: string
+  /** Monto mensual estimado (suma líneas monthly_rental) */
+  rentalMonthlyAmount?: number
+  rentalCurrency?: string
   /** Tarea CRM: responsable (para permitir reprogramar) */
   crmAssignedTo?: string | null
 }
@@ -241,7 +252,97 @@ export async function fetchPendientes(opts: FetchPendientesOpts): Promise<Pendie
     console.warn('[agenda] commercial followup reminders', e)
   }
 
-  const merged = [...cotizaciones, ...tareasCrm, ...seguimientos]
+  // ── Arriendo mensual: facturar mensualidad (cotizaciones facturadas) ──
+  let mensualidades: PendienteItem[] = []
+  try {
+    let rentalQ = supabase
+      .from('quotes')
+      .select(
+        'id, quote_number, title, rental_billing_day, rental_last_billed_period, company_id, kam_id, currency, company:companies(name)',
+      )
+      .eq('stage', 'facturada')
+      .not('rental_billing_day', 'is', null)
+      .order('quote_number', { ascending: true })
+      .limit(200)
+
+    if (companyId) rentalQ = rentalQ.eq('company_id', companyId)
+    if (esKam && uid) rentalQ = rentalQ.eq('kam_id', uid)
+
+    const { data: rentalQuotesRaw, error: rentalErr } = await rentalQ
+    if (rentalErr) {
+      const msg = rentalErr.message ?? ''
+      if (!msg.includes('rental_billing_day') && rentalErr.code !== '42703') {
+        console.warn('[agenda] rental billing quotes', msg)
+      }
+    } else {
+      const rentalQuotes = rentalQuotesRaw ?? []
+      const rentalIds = rentalQuotes.map((r: { id: string }) => r.id)
+      const monthlyByQuote = new Map<string, number>()
+
+      if (rentalIds.length > 0) {
+        const { data: rentalItems, error: itemsErr } = await supabase
+          .from('quote_items')
+          .select('quote_id, subtotal')
+          .in('quote_id', rentalIds)
+          .eq('pricing_model', 'monthly_rental')
+
+        if (itemsErr) console.warn('[agenda] rental quote_items', itemsErr.message)
+        for (const it of rentalItems ?? []) {
+          const row = it as { quote_id: string; subtotal: number | null }
+          monthlyByQuote.set(
+            row.quote_id,
+            (monthlyByQuote.get(row.quote_id) ?? 0) + (Number(row.subtotal) || 0),
+          )
+        }
+      }
+
+      const periodo = currentBillingPeriod(hoy)
+      mensualidades = rentalQuotes
+        .filter((r: { id: string }) => monthlyByQuote.has(r.id))
+        .filter((r: { rental_billing_day?: number | null; rental_last_billed_period?: string | null }) =>
+          shouldShowRentalAlert({
+            billingDay: r.rental_billing_day,
+            lastBilled: r.rental_last_billed_period,
+            hoyStr,
+            period: periodo,
+          }),
+        )
+        .map((r: any) => {
+          const day = Number(r.rental_billing_day)
+          const fecha = rentalAlertDate(periodo, day)
+          if (fecha < desde || fecha > hasta) return null
+          const co = firstEmbedded<{ name?: string | null }>(r.company)
+          const empresa = co?.name?.trim() ? String(co.name) : 'Empresa'
+          const monto = monthlyByQuote.get(r.id) ?? 0
+          const cur = (r.currency as string) || 'CLP'
+          const periodLabel = formatBillingPeriodLabel(periodo)
+          return {
+            key: `rental:${r.id}:${periodo}`,
+            fuente: 'rental_billing' as const,
+            fecha,
+            titulo: `Facturar mensualidad · ${r.quote_number ?? r.id.slice(0, 8)}`,
+            subtitulo: `${empresa} · ${periodLabel}`,
+            detalleEvento:
+              monto > 0
+                ? `Monto mensual estimado: ${monto.toLocaleString('es-CL')} ${cur} (líneas en arriendo mensual).`
+                : 'Cotización con líneas en arriendo mensual.',
+            companyId: r.company_id,
+            companyName: empresa,
+            quoteId: r.id,
+            quoteNumber: r.quote_number,
+            quoteKamId: r.kam_id ?? undefined,
+            rentalBillingPeriod: periodo,
+            rentalMonthlyAmount: monto,
+            rentalCurrency: cur,
+          }
+        })
+        .filter((p): p is PendienteItem => p != null)
+    }
+  } catch (e) {
+    console.warn('[agenda] rental billing', e)
+  }
+
+  const merged = [...cotizaciones, ...tareasCrm, ...seguimientos, ...mensualidades]
   merged.sort((a, b) => {
     if (a.fecha !== b.fecha) return a.fecha.localeCompare(b.fecha)
     return a.titulo.localeCompare(b.titulo)

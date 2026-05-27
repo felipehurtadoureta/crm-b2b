@@ -10,6 +10,7 @@ import {
   TrendingUp, Building2, ChevronRight, Calendar, AlertCircle,
   LayoutDashboard, MessageCircle, Mail, Users, MapPin, CalendarDays,
   ListTodo,
+  CalendarClock,
 } from 'lucide-react'
 import { fetchPendientes, bucketPendiente, type PendienteItem } from '@/lib/agendaPendientes'
 
@@ -61,13 +62,14 @@ interface AdminData {
 
 /* ─── constantes ────────────────────────────────────────────────── */
 const ACTIVE_STAGES = ['borrador', 'en_negociacion', 'enviada']
-const WON_STAGES    = ['aceptada', 'facturada']
+const WON_STAGES    = ['aceptada', 'pendiente_facturar', 'facturada']
 
 const STAGE_LABEL: Record<string, string> = {
   borrador:       'Borrador',
   en_negociacion: 'En negociación',
   enviada:        'Enviada',
   aceptada:       'Aceptada',
+  pendiente_facturar: 'Pend. facturar',
   facturada: 'Facturada',
   rechazada:      'Rechazada',
 }
@@ -94,6 +96,7 @@ const AGENDA_FUENTE_LABEL: Record<PendienteItem['fuente'], string> = {
   quote_close: 'Cierre cotización',
   crm_task: 'Tarea CRM',
   followup: 'Seguimiento comercial',
+  rental_billing: 'Mensualidad arriendo',
 }
 
 function CallTypeGlyph({ type }: { type: string }) {
@@ -390,6 +393,9 @@ function KamView({ data }: { data: KamData }) {
                       <span className="text-gray-400 shrink-0 mt-0.5">
                         {p.fuente === 'quote_close' && <FileText size={13} />}
                         {p.fuente === 'crm_task' && <ListTodo size={13} className="text-violet-600" />}
+                        {p.fuente === 'rental_billing' && (
+                          <CalendarClock size={13} className="text-amber-600" />
+                        )}
                       </span>
                       <div className="min-w-0 flex-1">
                         <p className="text-xs font-medium text-gray-800 truncate">{p.titulo}</p>
@@ -668,6 +674,9 @@ function AdminView({ data }: { data: AdminData }) {
                       <span className="text-gray-400 shrink-0 mt-0.5">
                         {p.fuente === 'quote_close' && <FileText size={12} />}
                         {p.fuente === 'crm_task' && <ListTodo size={12} className="text-violet-600" />}
+                        {p.fuente === 'rental_billing' && (
+                          <CalendarClock size={12} className="text-amber-600" />
+                        )}
                       </span>
                       <div className="min-w-0 flex-1">
                         <p className="text-xs font-medium text-gray-800 truncate">{p.titulo}</p>

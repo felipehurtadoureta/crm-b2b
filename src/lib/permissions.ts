@@ -75,7 +75,6 @@ const NAV_ITEMS: NavItemConfig[] = [
   { id: 'quotes', label: 'Cotizaciones', href: '/quotes', roles: ['super_admin', 'kam', 'reader'] },
   { id: 'products', label: 'Productos', href: '/products', roles: ['super_admin', 'kam'] },
   { id: 'inventory', label: 'Inventario', href: '/inventory', roles: ['super_admin', 'kam'] },
-  { id: 'invoices', label: 'Facturas', href: '/invoices', roles: ['super_admin', 'kam', 'reader'] },
   { id: 'documents', label: 'Documentos', href: '/documents', roles: ['super_admin', 'kam', 'reader'] },
 ]
 
@@ -83,7 +82,7 @@ const NAV_GROUPS: NavGroupConfig[] = [
   {
     id: 'banco',
     title: 'Banco',
-    roles: ['super_admin', 'kam'],
+    roles: ['super_admin', 'kam', 'reader'],
     items: [
       { id: 'bank_book', label: 'Libro de banco', href: '/bank', roles: ['super_admin', 'kam'] },
       { id: 'sii_documents', label: 'SII (RCV)', href: '/sii', roles: ['super_admin', 'kam'] },

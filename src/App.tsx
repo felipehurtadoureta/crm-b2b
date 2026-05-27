@@ -11,7 +11,6 @@ import ContactsPage from '@/pages/contacts/ContactsPage'
 import CallsPage from '@/pages/calls/CallsPage'
 import ProductsPage from '@/pages/products/ProductsPage'
 import InventoryPage from '@/pages/products/InventoryPage'
-import InvoicesPage from '@/pages/invoices/InvoicesPage'
 import DocumentsPage from '@/pages/documents/DocumentsPage'
 import QuotesPage from '@/pages/quotes/QuotesPage'
 import AgendaPage from '@/pages/agenda/AgendaPage'
@@ -48,10 +47,11 @@ export default function App() {
           <Route path="/contacts"  element={<ContactsPage />} />
           <Route path="/calls"     element={<CallsPage />} />
           <Route path="/quotes"    element={<QuotesPage />} />
-          <Route path="/sales" element={<QuotesPage initialStage="facturada" />} />
+          <Route path="/sales" element={<QuotesPage initialFacturadasView />} />
           <Route path="/products"  element={<ProductsPage />} />
           <Route path="/inventory" element={<InventoryPage />} />
-          <Route path="/invoices" element={<InvoicesPage />} />
+          <Route path="/invoices" element={<Navigate to="/sii" replace />} />
+          <Route path="/bank/invoices" element={<Navigate to="/sii" replace />} />
           <Route path="/documents" element={<DocumentsPage />} />
           <Route path="/admin/users" element={<AdminUsersPage />} />
           <Route path="/admin/organization" element={<Navigate to="/admin/users?tab=organization" replace />} />

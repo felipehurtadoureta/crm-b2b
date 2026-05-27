@@ -251,7 +251,7 @@ export default function InvoiceFormDialog(props: Props) {
             )}
             {!isCreate && companyId && (
               <Link
-                to={`/companies/${companyId}/v2?cfTab=invoices`}
+                to={`/companies/${companyId}/v2?cfInvoiceId=${encodeURIComponent(props.invoice.id)}`}
                 className="inline-flex items-center gap-1 text-violet-700 hover:underline font-medium"
               >
                 <Building2 size={12} />

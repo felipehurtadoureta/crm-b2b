@@ -4,7 +4,7 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { FileText, ListTodo, Minus, Plus } from 'lucide-react'
+import { CalendarClock, FileText, ListTodo, Minus, Plus } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
 import {
   bucketPendiente,
@@ -20,12 +20,14 @@ import {
   updateCommercialReminderDueDate,
   invalidateQuoteFollowupAgendaQueries,
 } from '@/hooks/useCommercialFollowups'
+import { formatBillingPeriodLabel, markQuoteRentalPeriodBilled } from '@/lib/quoteRentalBilling'
 import { normalizeQuoteStage, type Profile, type QuoteStage } from '@/types'
 
 const FUENTE_LABEL: Record<PendienteItem['fuente'], string> = {
   quote_close: 'Cierre cotización',
   crm_task: 'Tarea CRM',
   followup: 'Seguimiento',
+  rental_billing: 'Mensualidad arriendo',
 }
 
 function followupDotClass(subject: PendienteItem['followupSubject']) {
@@ -146,6 +148,11 @@ export default function AgendaMesDetalleRow({ p, hoyStr, profile, canEdit }: Age
     onSuccess: invalidarAgenda,
   })
 
+  const mutRentalBilled = useMutation({
+    mutationFn: () => markQuoteRentalPeriodBilled(p.quoteId!, p.rentalBillingPeriod),
+    onSuccess: invalidarAgenda,
+  })
+
   const mutPagarFactura = useMutation({
     mutationFn: () => markInvoiceAsPaid(p.invoiceId!),
     onSuccess: () => {
@@ -195,6 +202,12 @@ export default function AgendaMesDetalleRow({ p, hoyStr, profile, canEdit }: Age
     (mutTask.error as Error | undefined)?.message ??
     (mutQuoteClose.error as Error | undefined)?.message
 
+  const rentalBillingAccion =
+    canEdit &&
+    p.fuente === 'rental_billing' &&
+    p.quoteId &&
+    puedeEditarCotizacion(profile, p.quoteKamId)
+
   const seguimientoFacturaAccion =
     canEdit &&
     p.fuente === 'followup' &&
@@ -208,13 +221,20 @@ export default function AgendaMesDetalleRow({ p, hoyStr, profile, canEdit }: Age
     p.quoteId &&
     puedeEditarCotizacion(profile, p.quoteKamId)
 
-  const esperandoMutation = mutEtapaCot.isPending || mutPagarFactura.isPending
+  const esperandoMutation =
+    mutEtapaCot.isPending || mutPagarFactura.isPending || mutRentalBilled.isPending
   const errAccion =
-    (mutEtapaCot.error as Error | undefined)?.message ?? (mutPagarFactura.error as Error | undefined)?.message
+    (mutEtapaCot.error as Error | undefined)?.message ??
+    (mutPagarFactura.error as Error | undefined)?.message ??
+    (mutRentalBilled.error as Error | undefined)?.message
+
+  const periodoRentalLabel = p.rentalBillingPeriod
+    ? formatBillingPeriodLabel(p.rentalBillingPeriod)
+    : 'este mes'
 
   /** Evita borde hueco cuando el usuario no puede reprogramar ni tiene acciones de factura/cotización */
   const hayPieEditor =
-    mostrarReprogramar || seguimientoFacturaAccion || seguimientoCotAccion
+    mostrarReprogramar || rentalBillingAccion || seguimientoFacturaAccion || seguimientoCotAccion
 
   const titleAttr = `${p.titulo} — ${metaPrincipal}`
   /** Texto que describe de qué trata el evento (prioriza cuerpo de seguimiento / descripción de tarea). */
@@ -229,6 +249,9 @@ export default function AgendaMesDetalleRow({ p, hoyStr, profile, canEdit }: Age
         <span className="shrink-0 text-gray-400 flex items-center justify-center w-5">
           {p.fuente === 'quote_close' && <FileText size={15} className="text-blue-500" />}
           {p.fuente === 'crm_task' && <ListTodo size={15} className="text-violet-600" />}
+          {p.fuente === 'rental_billing' && (
+            <CalendarClock size={15} className="text-amber-600" aria-hidden />
+          )}
           {p.fuente === 'followup' && (
             <span
               className={cn('block w-2.5 h-2.5 rounded-full', followupDotClass(p.followupSubject))}
@@ -331,6 +354,31 @@ export default function AgendaMesDetalleRow({ p, hoyStr, profile, canEdit }: Age
                 </Button>
               </>
             )}
+            {rentalBillingAccion && (
+              <>
+                {mostrarReprogramar ? (
+                  <span className="inline-block w-px h-5 bg-gray-200 shrink-0 mx-1" aria-hidden />
+                ) : null}
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  className="h-7 text-[11px] px-2 shrink-0 border-amber-200 text-amber-900 bg-amber-50/80 hover:bg-amber-50"
+                  disabled={mutRentalBilled.isPending}
+                  onClick={() => {
+                    if (
+                      !window.confirm(
+                        `¿Marcar la mensualidad de ${periodoRentalLabel} como facturada? Dejará de aparecer en la agenda hasta el próximo mes.`,
+                      )
+                    )
+                      return
+                    mutRentalBilled.mutate()
+                  }}
+                >
+                  {mutRentalBilled.isPending ? '…' : 'Mensualidad facturada'}
+                </Button>
+              </>
+            )}
             {seguimientoFacturaAccion && (
               <>
                 {mostrarReprogramar ? <span className="inline-block w-px h-5 bg-gray-200 shrink-0 mx-1" aria-hidden /> : null}
@@ -356,11 +404,11 @@ export default function AgendaMesDetalleRow({ p, hoyStr, profile, canEdit }: Age
             )}
             {seguimientoCotAccion && (
               <>
-                {mostrarReprogramar || seguimientoFacturaAccion ? (
+                {mostrarReprogramar || rentalBillingAccion || seguimientoFacturaAccion ? (
                   <span className="inline-block w-px h-5 bg-gray-200 shrink-0 mx-1" aria-hidden />
                 ) : null}
                 <span className="text-[10px] text-gray-500 shrink-0">Cerrar:</span>
-                {(['aceptada', 'facturada', 'rechazada'] as const).map(st => (
+                {(['aceptada', 'pendiente_facturar', 'rechazada'] as const).map(st => (
                   <Button
                     key={st}
                     type="button"
@@ -370,22 +418,24 @@ export default function AgendaMesDetalleRow({ p, hoyStr, profile, canEdit }: Age
                     disabled={mutEtapaCot.isPending}
                     onClick={() => {
                       const label =
-                        st === 'facturada'
-                          ? 'orden de venta'
+                        st === 'pendiente_facturar'
+                          ? 'pendiente de facturar'
                           : st === 'aceptada'
                             ? 'aceptada'
                             : 'rechazada'
                       if (
                         !window.confirm(
-                          `¿Marcar la cotización como ${label}? Se actualizará el estado y puede cerrarse el seguimiento en agenda.`,
+                          st === 'pendiente_facturar'
+                            ? '¿Marcar como pendiente de facturar? Luego vincule la factura SII al abrir la cotización.'
+                            : `¿Marcar la cotización como ${label}? Se actualizará el estado y puede cerrarse el seguimiento en agenda.`,
                         )
                       )
                         return
                       mutEtapaCot.mutate(st)
                     }}
                   >
-                    {st === 'facturada'
-                      ? 'Facturada'
+                    {st === 'pendiente_facturar'
+                      ? 'Pend. facturar'
                       : st === 'aceptada'
                         ? 'Aceptada'
                         : 'Rechazada'}

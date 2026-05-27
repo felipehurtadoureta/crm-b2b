@@ -84,6 +84,7 @@ const QUOTE_STAGE_LABEL: Record<QuoteStage, string> = {
   en_negociacion: 'En negociación',
   enviada: 'Enviada',
   aceptada: 'Aceptada',
+  pendiente_facturar: 'Pendiente de facturar',
   rechazada: 'Rechazada',
   facturada: 'Facturada',
 }
@@ -97,6 +98,7 @@ const QUOTE_STAGE_STYLE: Record<string, string> = {
   en_negociacion: 'bg-violet-100 text-violet-800',
   enviada: 'bg-blue-100 text-blue-800',
   aceptada: 'bg-emerald-100 text-emerald-800',
+  pendiente_facturar: 'bg-amber-100 text-amber-800',
   facturada: 'bg-teal-100 text-teal-800',
   rechazada: 'bg-red-100 text-red-700',
 }

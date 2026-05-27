@@ -255,6 +255,8 @@ export interface Invoice {
   id: string
   company_id: string
   quote_id: string | null
+  /** Enlace técnico a documento de ventas SII (RCV) cuando aplica. */
+  sii_sales_document_id?: string | null
   invoice_number: string
   title: string | null
   status: InvoiceStatus
@@ -486,6 +488,7 @@ export type QuoteStage =
   | 'en_negociacion'
   | 'enviada'
   | 'aceptada'
+  | 'pendiente_facturar'
   | 'rechazada'
   | 'facturada'
 
@@ -500,6 +503,11 @@ export const QUOTE_FOLLOWUP_CLOSED_STAGES: readonly QuoteStage[] = [
 export function normalizeQuoteStage(stage: string): QuoteStage {
   if (stage === 'orden_de_venta') return 'facturada'
   return stage as QuoteStage
+}
+
+/** Etapa mostrada en Kanban (mantiene etapa real). */
+export function quoteKanbanStage(stage: string): QuoteStage {
+  return normalizeQuoteStage(stage)
 }
 
 export interface Quote {
@@ -521,6 +529,10 @@ export interface Quote {
   notes?: string
   lost_reason?: string
   closed_at?: string
+  /** Día del mes (1–28) para alertar facturación de arriendo mensual */
+  rental_billing_day?: number | null
+  /** Último período mensual facturado (YYYY-MM) */
+  rental_last_billed_period?: string | null
   sent_at?: string
   responded_at?: string
   is_tax_exempt?: boolean

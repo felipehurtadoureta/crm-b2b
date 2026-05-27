@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
 import { supabase } from '@/lib/supabase'
 import { useAuth } from '@/hooks/useAuth'
@@ -27,7 +28,18 @@ import QuoteLinkedDocumentsBlock from '@/components/quotes/QuoteLinkedDocumentsB
 import QuoteInvoiceValidationDialog from '@/components/quotes/QuoteInvoiceValidationDialog'
 import { fetchInvoiceForQuote } from '@/lib/quoteInvoiceFulfillment'
 import { syncQuoteFollowupRemindersForStage } from '@/lib/commercialFollowupsQuery'
+import type { Invoice } from '@/types'
 import { cn } from '@/lib/utils'
+import {
+  currentBillingPeriod,
+  formatBillingPeriodLabel,
+  markQuoteRentalPeriodBilled,
+  RENTAL_BILLING_DAY_MAX,
+  RENTAL_BILLING_DAY_MIN,
+  shouldShowRentalAlert,
+  sumMonthlyRentalSubtotals,
+  updateQuoteRentalBillingDay,
+} from '@/lib/quoteRentalBilling'
 import QuoteAmountInput from '@/components/quotes/QuoteAmountInput'
 /* ─── tipos ─────────────────────────────────────────────────────── */
 type Currency     = 'CLP' | 'USD' | 'UF'
@@ -72,8 +84,8 @@ const STAGES: { value: QuoteStage; label: string }[] = [
   { value: 'en_negociacion', label: 'En negociación' },
   { value: 'enviada',        label: 'Enviada' },
   { value: 'aceptada',       label: 'Aceptada' },
-  { value: 'facturada', label: 'Facturada' },
-  { value: 'rechazada',      label: 'Rechazada' },
+  { value: 'pendiente_facturar', label: 'Pendiente de facturar' },
+  { value: 'rechazada', label: 'Rechazada' },
 ]
 
 const TAX_RATE = 0.19
@@ -150,6 +162,12 @@ export default function QuoteDialog({ open, onClose, quote, companies, contacts,
     quoteCurrency: string
   } | null>(null)
   const [invoiceModalOpen, setInvoiceModalOpen] = useState(false)
+  const [invoiceModalIntent, setInvoiceModalIntent] = useState<'link' | 'replace'>('link')
+  const [linkedInvoice, setLinkedInvoice] = useState<Invoice | null>(null)
+  const [rentalBillingDayDraft, setRentalBillingDayDraft] = useState('')
+  const [rentalLocalLastBilled, setRentalLocalLastBilled] = useState<string | null>(null)
+  const [hasRentalLinesDb, setHasRentalLinesDb] = useState(false)
+  const qc = useQueryClient()
 
   const readonly = profile?.role === 'reader' ||
     (profile?.role === 'kam' && !!quote && quote.kam_id !== profile.id)
@@ -180,9 +198,23 @@ export default function QuoteDialog({ open, onClose, quote, companies, contacts,
   const showCLPRef  = totalCLPRef !== null && totalCLPRef > 0 &&
     ((cur === 'USD' && usdRate > 0) || (cur === 'UF' && ufRate > 0))
 
+  const hasMonthlyRental = useMemo(
+    () => items.some(i => i.pricing_model === 'monthly_rental'),
+    [items],
+  )
+  const hasRentalLines = hasMonthlyRental || hasRentalLinesDb
+  const monthlyRentalTotal = useMemo(
+    () => sumMonthlyRentalSubtotals(items),
+    [items],
+  )
+
   /* cargar al abrir */
   useEffect(() => {
-    if (!open) return
+    if (!open) {
+      setInvoicePending(null)
+      setInvoiceModalOpen(false)
+      return
+    }
     setError(null)
     if (quote) {
       const q = quote as any
@@ -205,6 +237,9 @@ export default function QuoteDialog({ open, onClose, quote, companies, contacts,
         discount_type:      (q.discount_type     ?? 'none') as DiscountType,
         discount_value:     q.discount_value     ?? 0,
       })
+      const day = q.rental_billing_day as number | null | undefined
+      setRentalBillingDayDraft(day != null ? String(day) : '')
+      setRentalLocalLastBilled((q.rental_last_billed_period as string | null) ?? null)
       // Cargar ítems
       supabase
         .from('quote_items')
@@ -253,6 +288,8 @@ export default function QuoteDialog({ open, onClose, quote, companies, contacts,
       }
       setForm(base)
       setItems([])
+      setRentalBillingDayDraft('')
+      setRentalLocalLastBilled(null)
       // Auto-cargar KAM lead si viene con empresa pre-llenada
       if (initialCompanyId && profile?.role !== 'kam') {
         supabase.from('company_kams').select('kam_id')
@@ -263,7 +300,154 @@ export default function QuoteDialog({ open, onClose, quote, companies, contacts,
           })
       }
     }
-  }, [open, quote?.id]) // eslint-disable-line
+  }, [open, quote?.id, quote?.rental_billing_day, quote?.rental_last_billed_period]) // eslint-disable-line
+
+  /* Líneas en arriendo en BD (por si los ítems aún no cargaron en memoria) */
+  useEffect(() => {
+    if (!open || !quote?.id) {
+      setHasRentalLinesDb(false)
+      return
+    }
+    void supabase
+      .from('quote_items')
+      .select('id', { count: 'exact', head: true })
+      .eq('quote_id', quote.id)
+      .eq('pricing_model', 'monthly_rental')
+      .then(({ count, error }) => {
+        if (error) {
+          console.warn('[QuoteDialog] quote_items monthly_rental', error.message)
+          setHasRentalLinesDb(false)
+          return
+        }
+        setHasRentalLinesDb((count ?? 0) > 0)
+      })
+  }, [open, quote?.id, items])
+
+  const quoteMeta = quote
+    ? { stage: quote.stage, closed_at: quote.closed_at }
+    : null
+  const linkedSummary = linkedInvoice?.invoice_number
+    ? {
+        invoice_number: linkedInvoice.invoice_number,
+        sii_sales_document_id: linkedInvoice.sii_sales_document_id ?? null,
+      }
+    : null
+  const quoteStageNorm = normalizeQuoteStage(quote?.stage ?? 'borrador')
+  const isPendienteFacturar = quoteStageNorm === 'pendiente_facturar'
+  const isFacturada = quoteStageNorm === 'facturada'
+  /** Configurar día de alerta cuando la venta ya está ganada (alertas en agenda solo si facturada) */
+  const canShowRentalBillingUi =
+    isFacturada ||
+    isPendienteFacturar ||
+    quoteStageNorm === 'aceptada'
+  const linkedFolio = linkedSummary?.invoice_number?.trim() ?? ''
+  const canShowLinkInvoiceAction = isPendienteFacturar && !readonly
+  const rentalPeriod = currentBillingPeriod()
+  const rentalLastBilled = rentalLocalLastBilled ?? quote?.rental_last_billed_period ?? null
+  const rentalBillingDayNum = rentalBillingDayDraft
+    ? Number(rentalBillingDayDraft)
+    : quote?.rental_billing_day ?? null
+  const showRentalBillingAlert =
+    isFacturada &&
+    hasMonthlyRental &&
+    shouldShowRentalAlert({
+      billingDay: rentalBillingDayNum,
+      lastBilled: rentalLastBilled,
+      hoyStr: today(),
+      period: rentalPeriod,
+    })
+
+  const mutSaveRentalDay = useMutation({
+    mutationFn: async () => {
+      if (!quote?.id) throw new Error('Cotización no disponible')
+      const raw = rentalBillingDayDraft.trim()
+      const day = raw ? Number(raw) : null
+      if (day != null && (day < RENTAL_BILLING_DAY_MIN || day > RENTAL_BILLING_DAY_MAX)) {
+        throw new Error(`El día debe estar entre ${RENTAL_BILLING_DAY_MIN} y ${RENTAL_BILLING_DAY_MAX}`)
+      }
+      await updateQuoteRentalBillingDay(quote.id, day)
+    },
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['agenda-pendientes'] })
+      onSaved()
+    },
+    onError: (e: Error) => {
+      const msg = e.message ?? ''
+      if (msg.includes('rental_billing_day') || msg.includes('column')) {
+        setError(
+          'Faltan columnas en Supabase. Ejecute: supabase/sql/quotes_rental_billing.sql',
+        )
+        return
+      }
+      setError(msg)
+    },
+  })
+
+  const mutMarkRentalBilled = useMutation({
+    mutationFn: async () => {
+      if (!quote?.id) throw new Error('Cotización no disponible')
+      await markQuoteRentalPeriodBilled(quote.id, rentalPeriod)
+    },
+    onSuccess: () => {
+      setRentalLocalLastBilled(rentalPeriod)
+      void qc.invalidateQueries({ queryKey: ['agenda-pendientes'] })
+      onSaved()
+    },
+    onError: (e: Error) => setError(e.message),
+  })
+
+  const openInvoiceLinkModal = (intent: 'link' | 'replace' = 'link') => {
+    if (!quote?.id) return
+    setInvoiceModalIntent(intent)
+    setInvoicePending({
+      quoteId: quote.id,
+      companyId: quote.company_id,
+      quoteNumber: quote.quote_number,
+      quoteTotal: Number(quote.total) || 0,
+      quoteCurrency: quote.currency || 'CLP',
+    })
+    setInvoiceModalOpen(true)
+  }
+
+  /* Factura SII vinculada o pendiente de vincular */
+  useEffect(() => {
+    if (!open || !quote?.id) {
+      setLinkedInvoice(null)
+      return
+    }
+    void (async () => {
+      try {
+        const inv = (await fetchInvoiceForQuote(quote.id)) as Invoice | null
+        const hasNumber = !!(inv?.invoice_number as string | undefined)?.trim()
+        setLinkedInvoice(hasNumber ? inv : null)
+        const pendiente = normalizeQuoteStage(quote.stage) === 'pendiente_facturar'
+        if (pendiente && !hasNumber) {
+          setInvoicePending({
+            quoteId: quote.id,
+            companyId: quote.company_id,
+            quoteNumber: quote.quote_number,
+            quoteTotal: Number(quote.total) || 0,
+            quoteCurrency: quote.currency || 'CLP',
+          })
+        } else {
+          setInvoicePending(null)
+        }
+      } catch {
+        setLinkedInvoice(null)
+        if (normalizeQuoteStage(quote.stage) === 'pendiente_facturar') {
+          setInvoicePending({
+            quoteId: quote.id,
+            companyId: quote.company_id,
+            quoteNumber: quote.quote_number,
+            quoteTotal: Number(quote.total) || 0,
+            quoteCurrency: quote.currency || 'CLP',
+          })
+        } else {
+          setInvoicePending(null)
+        }
+      }
+    })()
+  }, [open, quote?.id, quote?.stage, quote?.closed_at, quote?.company_id, quote?.quote_number, quote?.total, quote?.currency])
 
   const set = (field: keyof FormState, value: string | number | boolean) =>
     setForm(prev => ({ ...prev, [field]: value }))
@@ -384,20 +568,7 @@ export default function QuoteDialog({ open, onClose, quote, companies, contacts,
     setError(null)
     try {
       const prevStage = quote ? normalizeQuoteStage(quote.stage) : 'borrador'
-      let saveStage = form.stage
-      let openInvoiceAfter = false
-      if (form.stage === 'facturada' && prevStage !== 'facturada') {
-        if (!quote?.id) {
-          setError('Guarde la cotización antes de marcarla como facturada.')
-          setLoading(false)
-          return
-        }
-        const existingInv = await fetchInvoiceForQuote(quote.id)
-        if (!existingInv) {
-          saveStage = prevStage
-          openInvoiceAfter = true
-        }
-      }
+      const saveStage = form.stage
 
       let quoteNumber = quote?.quote_number
       if (!quote) {
@@ -432,7 +603,16 @@ export default function QuoteDialog({ open, onClose, quote, companies, contacts,
       const { data: saved, error: qErr } = quote
         ? await supabase.from('quotes').update(payload).eq('id', quote.id).select().single()
         : await supabase.from('quotes').insert(payload).select().single()
-      if (qErr) throw qErr
+      if (qErr) {
+        const lower = (qErr.message ?? '').toLowerCase()
+        if (lower.includes('quotes_stage_check') || (lower.includes('check constraint') && lower.includes('stage'))) {
+          throw new Error(
+            'Falta habilitar la etapa "pendiente_facturar" en Supabase. ' +
+              'Ejecute el SQL: supabase/sql/quotes_pendiente_facturar_stage.sql',
+          )
+        }
+        throw qErr
+      }
 
       if (items.length > 0) {
         const { error: delErr } = await supabase.from('quote_items').delete().eq('quote_id', saved.id)
@@ -458,20 +638,7 @@ export default function QuoteDialog({ open, onClose, quote, companies, contacts,
         if (delEmptyErr) throw delEmptyErr
       }
 
-      if (openInvoiceAfter) {
-        setInvoicePending({
-          quoteId: saved.id as string,
-          companyId: form.company_id,
-          quoteNumber: (saved.quote_number as string) ?? quoteNumber ?? '',
-          quoteTotal: Number(saved.total) || total,
-          quoteCurrency: (saved.currency as string) || cur,
-        })
-        setInvoiceModalOpen(true)
-        setForm(f => ({ ...f, stage: prevStage }))
-        return
-      }
-
-      if (quote?.id && normalizeQuoteStage(prevStage) !== normalizeQuoteStage(saveStage)) {
+      if (quote?.id && prevStage !== saveStage) {
         await syncQuoteFollowupRemindersForStage(quote.id, prevStage, saveStage)
       }
 
@@ -497,17 +664,22 @@ export default function QuoteDialog({ open, onClose, quote, companies, contacts,
       {invoicePending && (
         <QuoteInvoiceValidationDialog
           open={invoiceModalOpen}
+          intent={invoiceModalIntent}
           quoteId={invoicePending.quoteId}
           companyId={invoicePending.companyId}
           quoteNumber={invoicePending.quoteNumber}
           quoteTotal={invoicePending.quoteTotal}
           quoteCurrency={invoicePending.quoteCurrency}
           onClose={() => setInvoiceModalOpen(false)}
-          onCompleted={() => {
-            setInvoicePending(null)
+          onCompleted={async () => {
             setInvoiceModalOpen(false)
+            setInvoicePending(null)
+            if (quote?.id) {
+              const inv = (await fetchInvoiceForQuote(quote.id)) as Invoice | null
+              const hasNumber = !!(inv?.invoice_number as string | undefined)?.trim()
+              setLinkedInvoice(hasNumber ? inv : null)
+            }
             onSaved()
-            onClose()
           }}
         />
       )}
@@ -530,6 +702,15 @@ export default function QuoteDialog({ open, onClose, quote, companies, contacts,
                     <button type="button" className={QUOTE_DIALOG_NAV_BTN} onClick={scrollToDocumentos}>
                       Documentos
                     </button>
+                    {canShowRentalBillingUi && (
+                      <button
+                        type="button"
+                        className={QUOTE_DIALOG_NAV_BTN}
+                        onClick={() => scrollQuoteModalSection('quote-rental-billing')}
+                      >
+                        Facturación recurrente
+                      </button>
+                    )}
                   </div>
                 </>
               )}
@@ -545,13 +726,157 @@ export default function QuoteDialog({ open, onClose, quote, companies, contacts,
             </button>
           </div>
 
-          {invoicePending && !invoiceModalOpen && (
-            <div className="mx-4 mt-3 rounded-lg border border-violet-200 bg-violet-50 px-3 py-2 flex flex-wrap items-center justify-between gap-2 shrink-0">
-              <p className="text-xs text-violet-900">
-                Tiene una facturación en curso. Puede volver al formulario sin perder lo ingresado.
+          {isFacturada && (
+            <div className="mx-4 mt-3 rounded-lg border border-teal-200 bg-teal-50 px-3 py-2 shrink-0 space-y-2">
+              <p className="text-xs font-medium text-teal-900">
+                Cotización facturada
+                {linkedFolio ? ` · Factura SII ${linkedFolio}` : ''}
               </p>
-              <Button type="button" size="sm" className="h-8 text-xs" onClick={() => setInvoiceModalOpen(true)}>
-                Continuar facturación
+              <div className="flex flex-wrap gap-2">
+                {!readonly && (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    className="h-8 text-xs border-teal-300 bg-white"
+                    onClick={() => openInvoiceLinkModal('replace')}
+                  >
+                    Cambiar factura SII
+                  </Button>
+                )}
+                <Link
+                  to="/sii"
+                  className="inline-flex items-center text-xs font-medium text-teal-800 underline hover:text-teal-950"
+                >
+                  Ver en SII → Ventas
+                </Link>
+                {form.company_id && (
+                  <Link
+                    to={`/companies/${form.company_id}/v2?cfTab=interactions`}
+                    className="inline-flex items-center text-xs font-medium text-teal-800 underline hover:text-teal-950"
+                  >
+                    Seguimiento comercial
+                  </Link>
+                )}
+              </div>
+            </div>
+          )}
+
+          {canShowRentalBillingUi && !hasRentalLines && (
+            <div
+              id="quote-rental-billing"
+              className="mx-4 mt-3 rounded-lg border border-amber-200 bg-amber-50/90 px-3 py-3 shrink-0 space-y-2"
+            >
+              <p className="text-xs font-medium text-amber-950">Facturación recurrente (arriendo mensual)</p>
+              <p className="text-xs text-amber-900">
+                Para activar las alertas mensuales, asigne al menos una línea como{' '}
+                <span className="font-medium">Arriendo mensual</span> (catálogo o ítem libre) y guarde la cotización.
+                {!isFacturada
+                  ? ' Las alertas en la agenda comenzarán cuando la cotización esté facturada (factura SII vinculada).'
+                  : null}
+              </p>
+            </div>
+          )}
+
+          {canShowRentalBillingUi && hasRentalLines && (
+            <div
+              id="quote-rental-billing"
+              className="mx-4 mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-3 shrink-0 space-y-3"
+            >
+              <p className="text-xs font-medium text-amber-950">Facturación recurrente (arriendo mensual)</p>
+              {!isFacturada && (
+                <p className="text-xs text-amber-800">
+                  Puede configurar el día de alerta ahora. Los recordatorios en agenda se activan cuando la cotización
+                  esté facturada (factura SII vinculada).
+                </p>
+              )}
+              <p className="text-xs text-amber-900">
+                Monto mensual estimado: {sym}
+                {fmtNum(monthlyRentalTotal, cur)} ({cur})
+                {monthlyRentalTotal > 0 ? ' · suma de líneas en arriendo mensual' : ''}
+              </p>
+              <div className="flex flex-wrap items-end gap-3">
+                <div className="space-y-1 min-w-[10rem]">
+                  <Label className="text-xs font-medium text-amber-950">Día de alerta cada mes</Label>
+                  <Select
+                    value={rentalBillingDayDraft || '__none__'}
+                    onValueChange={v => setRentalBillingDayDraft(v === '__none__' ? '' : v)}
+                    disabled={readonly}
+                  >
+                    <SelectTrigger className="h-8 text-xs bg-white">
+                      <SelectValue placeholder="Elegir día (1–28)" />
+                    </SelectTrigger>
+                    <SelectContent className="max-h-56">
+                      <SelectItem value="__none__">Sin día configurado</SelectItem>
+                      {Array.from({ length: RENTAL_BILLING_DAY_MAX }, (_, i) => i + 1).map(d => (
+                        <SelectItem key={d} value={String(d)}>
+                          Día {d} de cada mes
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                {!readonly && (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    className="h-8 text-xs border-amber-300 bg-white"
+                    disabled={mutSaveRentalDay.isPending}
+                    onClick={() => mutSaveRentalDay.mutate()}
+                  >
+                    {mutSaveRentalDay.isPending ? 'Guardando…' : 'Guardar día'}
+                  </Button>
+                )}
+              </div>
+              {rentalLastBilled ? (
+                <p className="text-xs text-amber-800">
+                  Última mensualidad registrada:{' '}
+                  <span className="font-medium">{formatBillingPeriodLabel(rentalLastBilled)}</span>
+                </p>
+              ) : (
+                <p className="text-xs text-amber-800">Aún no se registra ninguna mensualidad facturada.</p>
+              )}
+              {showRentalBillingAlert && !readonly && (
+                <div className="flex flex-wrap items-center gap-2 pt-1 border-t border-amber-200/80">
+                  <p className="text-xs text-amber-900 flex-1 min-w-[12rem]">
+                    Pendiente facturar la mensualidad de {formatBillingPeriodLabel(rentalPeriod)} (visible en
+                    Agenda).
+                  </p>
+                  <Button
+                    type="button"
+                    size="sm"
+                    className="h-8 text-xs"
+                    disabled={mutMarkRentalBilled.isPending}
+                    onClick={() => {
+                      if (
+                        !window.confirm(
+                          `¿Marcar la mensualidad de ${formatBillingPeriodLabel(rentalPeriod)} como facturada?`,
+                        )
+                      )
+                        return
+                      mutMarkRentalBilled.mutate()
+                    }}
+                  >
+                    {mutMarkRentalBilled.isPending ? '…' : 'Mensualidad facturada'}
+                  </Button>
+                </div>
+              )}
+              {rentalBillingDayNum && !showRentalBillingAlert && rentalLastBilled === rentalPeriod && (
+                <p className="text-xs text-emerald-800">
+                  La mensualidad de {formatBillingPeriodLabel(rentalPeriod)} ya está registrada.
+                </p>
+              )}
+            </div>
+          )}
+
+          {canShowLinkInvoiceAction && !invoiceModalOpen && (
+            <div className="mx-4 mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 flex flex-wrap items-center justify-between gap-2 shrink-0">
+              <p className="text-xs text-amber-900">
+                Emita la factura en el SII (fuera del CRM). Luego elija el folio para marcar esta cotización como facturada.
+              </p>
+              <Button type="button" size="sm" className="h-8 text-xs" onClick={() => openInvoiceLinkModal('link')}>
+                Elegir factura SII
               </Button>
             </div>
           )}
@@ -630,12 +955,18 @@ export default function QuoteDialog({ open, onClose, quote, companies, contacts,
 
               <div className="space-y-1">
                 <Label className="text-xs font-medium text-gray-600">Estado</Label>
-                <Select value={form.stage} onValueChange={v => set('stage', v)} disabled={readonly}>
-                  <SelectTrigger><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    {STAGES.map(s => <SelectItem key={s.value} value={s.value}>{s.label}</SelectItem>)}
-                  </SelectContent>
-                </Select>
+                {quoteStageNorm === 'facturada' ? (
+                  <p className="text-sm font-medium text-teal-800 py-2 px-3 rounded-md border border-teal-200 bg-teal-50/80">
+                    Facturada
+                  </p>
+                ) : (
+                  <Select value={form.stage} onValueChange={v => set('stage', v)} disabled={readonly}>
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      {STAGES.map(s => <SelectItem key={s.value} value={s.value}>{s.label}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                )}
               </div>
 
               <div className="space-y-1">
@@ -782,7 +1113,7 @@ export default function QuoteDialog({ open, onClose, quote, companies, contacts,
                           <tr key={item.tempId} className={item.is_free ? 'bg-blue-50/40' : 'hover:bg-gray-50/60'}>
                             <td className="px-3 py-2 align-middle min-w-0">
                               {item.is_free ? (
-                                <div className="flex items-center gap-2 min-w-0">
+                                <div className="flex items-center gap-2 min-w-0 flex-wrap">
                                   <span className="shrink-0 text-xs bg-blue-100 text-blue-700 rounded px-1.5 py-0.5 font-medium whitespace-nowrap">
                                     {LINE_KIND_LABEL.custom}
                                   </span>
@@ -790,9 +1121,29 @@ export default function QuoteDialog({ open, onClose, quote, companies, contacts,
                                     value={item.product_name}
                                     onChange={e => updateFreeName(item.tempId, e.target.value)}
                                     placeholder="Descripción..."
-                                    className="h-8 text-sm flex-1 min-w-0"
+                                    className="h-8 text-sm flex-1 min-w-[8rem]"
                                     disabled={readonly}
                                   />
+                                  {readonly ? (
+                                    <span className="text-xs rounded bg-violet-50 text-violet-800 px-2 py-0.5 shrink-0 whitespace-nowrap">
+                                      {PRICING_MODEL_LABEL[item.pricing_model]}
+                                    </span>
+                                  ) : (
+                                    <Select
+                                      value={item.pricing_model}
+                                      onValueChange={v => updatePricingModel(item.tempId, v as QuotePricingModel)}
+                                    >
+                                      <SelectTrigger className="h-7 min-w-[7.5rem] w-[132px] text-xs shrink-0">
+                                        <SelectValue />
+                                      </SelectTrigger>
+                                      <SelectContent>
+                                        <SelectItem value="sale">{PRICING_MODEL_LABEL.sale}</SelectItem>
+                                        <SelectItem value="monthly_rental">
+                                          {PRICING_MODEL_LABEL.monthly_rental}
+                                        </SelectItem>
+                                      </SelectContent>
+                                    </Select>
+                                  )}
                                 </div>
                               ) : (
                                 <div className="flex items-center gap-2 min-w-0">

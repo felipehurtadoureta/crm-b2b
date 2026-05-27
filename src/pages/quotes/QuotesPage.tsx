@@ -1,12 +1,17 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
-import { useQueryClient } from '@tanstack/react-query'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useLocation, useNavigate, useSearchParams, Link } from 'react-router-dom'
 import { supabase } from '@/lib/supabase'
 import { useAuth } from '@/hooks/useAuth'
 import type { Company, Contact, Profile, Product, Quote, QuoteStage } from '@/types'
 import { normalizeQuoteStage } from '@/types'
 import QuoteDialog from './QuoteDialog'
-import QuoteInvoiceValidationDialog from '@/components/quotes/QuoteInvoiceValidationDialog'
+import {
+  fetchInvoiceLinksByQuoteIds,
+  isQuotePendingInvoiceClosed,
+  quotePendingInvoiceBadge,
+  type QuoteInvoiceLinkSummary,
+} from '@/lib/quoteInvoiceSiiLink'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import {
@@ -28,18 +33,23 @@ interface QuoteRow extends Quote {
   kam?:     { id: string; full_name: string }
 }
 
-const STAGES: {
+const KANBAN_STAGES: {
   key: QuoteStage; label: string; color: string; bg: string; dot: string; dropBg: string
 }[] = [
   { key: 'borrador',       label: 'Borrador',       color: 'text-gray-600',    bg: 'bg-gray-50 border-gray-200',       dot: 'bg-gray-400',    dropBg: 'bg-gray-100'    },
   { key: 'en_negociacion', label: 'En negociación', color: 'text-violet-700',  bg: 'bg-violet-50 border-violet-200',   dot: 'bg-violet-400',  dropBg: 'bg-violet-100'  },
   { key: 'enviada',        label: 'Enviada',        color: 'text-blue-700',    bg: 'bg-blue-50 border-blue-200',       dot: 'bg-blue-400',    dropBg: 'bg-blue-100'    },
   { key: 'aceptada',       label: 'Aceptada',       color: 'text-emerald-700', bg: 'bg-emerald-50 border-emerald-200', dot: 'bg-emerald-400', dropBg: 'bg-emerald-100' },
-  { key: 'facturada', label: 'Facturada', color: 'text-teal-700',    bg: 'bg-teal-50 border-teal-200',       dot: 'bg-teal-500',    dropBg: 'bg-teal-100'    },
+  { key: 'pendiente_facturar', label: 'Pend. facturar', color: 'text-amber-700', bg: 'bg-amber-50 border-amber-200', dot: 'bg-amber-400', dropBg: 'bg-amber-100' },
   { key: 'rechazada',      label: 'Rechazada',      color: 'text-red-600',     bg: 'bg-red-50 border-red-200',         dot: 'bg-red-400',     dropBg: 'bg-red-100'     },
 ]
 
-const STAGE_MAP = Object.fromEntries(STAGES.map(s => [s.key, s]))
+const ALL_STAGES = [
+  ...KANBAN_STAGES,
+  { key: 'facturada' as const, label: 'Facturada', color: 'text-teal-700', bg: 'bg-teal-50 border-teal-200', dot: 'bg-teal-500', dropBg: 'bg-teal-100' },
+]
+
+const STAGE_MAP = Object.fromEntries(ALL_STAGES.map(s => [s.key, s]))
 
 /** Mismas etapas que el dashboard considera “pipeline activo” */
 const PIPELINE_STAGES: QuoteStage[] = ['borrador', 'en_negociacion', 'enviada']
@@ -54,7 +64,13 @@ const fmtCurrency = (amount: number, currency: string) => {
 const fmtDate  = (d: string) => new Date(d.length === 10 ? d + 'T00:00:00' : d).toLocaleDateString('es-CL', { day: '2-digit', month: '2-digit', year: 'numeric' })
 const fmtShort = (d: string) => new Date(d.length === 10 ? d + 'T00:00:00' : d).toLocaleDateString('es-CL', { day: '2-digit', month: 'short' })
 
-export default function QuotesPage({ initialStage }: { initialStage?: QuoteStage } = {}) {
+export default function QuotesPage({
+  initialStage,
+  initialFacturadasView,
+}: {
+  initialStage?: QuoteStage
+  initialFacturadasView?: boolean
+} = {}) {
   const { profile, loading: authLoading } = useAuth()
   const queryClient = useQueryClient()
   const location = useLocation()
@@ -69,7 +85,10 @@ export default function QuotesPage({ initialStage }: { initialStage?: QuoteStage
   const [ancillaryReady, setAncillaryReady] = useState(false)
   const [quotesReady, setQuotesReady] = useState(false)
   const [loading, setLoading]         = useState(true)
-  const [view, setView]               = useState<'kanban' | 'table'>('kanban')
+  const [view, setView]               = useState<'kanban' | 'table'>(
+    initialFacturadasView ? 'table' : 'kanban',
+  )
+  const [facturadasView, setFacturadasView] = useState(!!initialFacturadasView)
   const [dialogOpen, setDialogOpen]         = useState(false)
   const [selected, setSelected]             = useState<QuoteRow | null>(null)
   const [search, setSearch]                 = useState('')
@@ -78,7 +97,6 @@ export default function QuotesPage({ initialStage }: { initialStage?: QuoteStage
   const [deleting, setDeleting]             = useState(false)
   const [dragOver, setDragOver]             = useState<QuoteStage | null>(null)
   const [highlightId, setHighlightId]       = useState<string | undefined>()
-  const [invoiceKanban, setInvoiceKanban]   = useState<QuoteRow | null>(null)
   /** Filtros especiales activados desde URL (panel / enlaces) */
   const [cierres30Only, setCierres30Only]   = useState(false)
   const [ganadasMesOnly, setGanadasMesOnly] = useState(false)
@@ -136,7 +154,7 @@ export default function QuotesPage({ initialStage }: { initialStage?: QuoteStage
 
     const fromPanel =
       pipeline === 'activas'
-      || (stage != null && STAGES.some(s => s.key === stage))
+      || (stage != null && ALL_STAGES.some(s => s.key === stage))
       || cierres === '30'
       || ganadas === 'mes'
 
@@ -153,7 +171,7 @@ export default function QuotesPage({ initialStage }: { initialStage?: QuoteStage
         setFilterStage('__pipeline__')
         setCierres30Only(false)
         setGanadasMesOnly(false)
-      } else if (stage && STAGES.some(s => s.key === stage)) {
+      } else if (stage && ALL_STAGES.some(s => s.key === stage)) {
         setFilterStage(stage)
         setCierres30Only(false)
         setGanadasMesOnly(false)
@@ -215,6 +233,14 @@ export default function QuotesPage({ initialStage }: { initialStage?: QuoteStage
 
   useEffect(() => { if (!authLoading) loadQuotes() }, [authLoading, loadQuotes])
 
+  const quoteIds = useMemo(() => quotes.map(q => q.id), [quotes])
+
+  const { data: invoiceLinksByQuote = new Map<string, QuoteInvoiceLinkSummary>() } = useQuery({
+    queryKey: ['quote-invoice-links', quoteIds],
+    queryFn: () => fetchInvoiceLinksByQuoteIds(quoteIds),
+    enabled: quoteIds.length > 0,
+  })
+
   // drag
   function handleDragStart(e: React.DragEvent, q: QuoteRow) {
     if (!canEdit(q.kam?.id ?? '')) { e.preventDefault(); return }
@@ -228,19 +254,31 @@ export default function QuotesPage({ initialStage }: { initialStage?: QuoteStage
     if (!id) return
     const q = quotes.find(x => x.id === id)
     if (!q || q.stage === newStage) return
-    if (newStage === 'facturada') {
-      setInvoiceKanban(q)
-      return
+    const failWithMessage = (message: string) => {
+      window.alert(message)
+      setQuotes(prev => prev.map(x => x.id === id ? { ...x, stage: q.stage } : x))
     }
     setQuotes(prev => prev.map(x => x.id === id ? { ...x, stage: newStage } : x))
-    const closed = ['aceptada', 'rechazada', 'facturada'].includes(newStage)
+    const isPendienteOpen = newStage === 'pendiente_facturar'
+    const closed =
+      ['aceptada', 'rechazada'].includes(newStage) ||
+      (isPendienteOpen && isQuotePendingInvoiceClosed(q))
     const prevStage = q.stage
     const { error } = await supabase.from('quotes').update({
       stage: newStage,
-      closed_at: closed && !q.closed_at ? new Date().toISOString() : (!closed ? null : q.closed_at),
+      closed_at: isPendienteOpen
+        ? null
+        : closed && !q.closed_at
+          ? new Date().toISOString()
+          : !closed
+            ? null
+            : q.closed_at,
     }).eq('id', id)
     if (error) {
-      setQuotes(prev => prev.map(x => x.id === id ? { ...x, stage: q.stage } : x))
+      const msg = error.message.toLowerCase().includes('quotes_stage_check')
+        ? 'Falta habilitar la etapa en Supabase. Ejecute: supabase/sql/quotes_pendiente_facturar_stage.sql'
+        : error.message
+      failWithMessage(msg)
     } else {
       try {
         await syncQuoteFollowupRemindersForStage(id, prevStage, newStage)
@@ -276,7 +314,9 @@ export default function QuotesPage({ initialStage }: { initialStage?: QuoteStage
       || (q.kam?.full_name ?? '').toLowerCase().includes(term)
 
     let matchFiltro = true
-    if (ganadasMesOnly) {
+    if (facturadasView) {
+      matchFiltro = q.stage === 'facturada'
+    } else if (ganadasMesOnly) {
       matchFiltro = WON_STAGES_FILTER.includes(q.stage)
         && !!(q.closed_at && q.closed_at >= monthStartIso)
     } else if (cierres30Only) {
@@ -293,7 +333,8 @@ export default function QuotesPage({ initialStage }: { initialStage?: QuoteStage
     return matchSearch && matchFiltro && matchUrlQuote
   })
 
-  const byStage = (s: QuoteStage) => filtered.filter(q => q.stage === s)
+  const kanbanQuotes = filtered.filter(q => q.stage !== 'facturada')
+  const byStage = (s: QuoteStage) => kanbanQuotes.filter(q => q.stage === s)
   const stageTotal = (s: QuoteStage) => byStage(s).reduce((n, q) => n + (q.total ?? 0), 0)
 
   return (
@@ -306,18 +347,38 @@ export default function QuotesPage({ initialStage }: { initialStage?: QuoteStage
           <span className="text-xs bg-gray-100 text-gray-600 rounded-full px-2.5 py-0.5 font-medium tabular-nums">{quotes.length}</span>
         </div>
         <div className="flex items-center gap-2">
-          <div className="flex rounded-md border overflow-hidden">
-            <button onClick={() => setView('kanban')}
-              className={cn('px-3 py-1.5 text-xs flex items-center gap-1.5 transition-colors',
-                view === 'kanban' ? 'bg-gray-900 text-white' : 'text-gray-500 hover:bg-gray-50')}>
-              <LayoutGrid size={13} /> Kanban
-            </button>
-            <button onClick={() => setView('table')}
-              className={cn('px-3 py-1.5 text-xs flex items-center gap-1.5 border-l transition-colors',
-                view === 'table' ? 'bg-gray-900 text-white' : 'text-gray-500 hover:bg-gray-50')}>
-              <List size={13} /> Tabla
-            </button>
-          </div>
+          <Button
+            type="button"
+            size="sm"
+            variant={facturadasView ? 'default' : 'outline'}
+            className="h-8 text-xs"
+            onClick={() => {
+              setFacturadasView(v => {
+                const next = !v
+                if (next) setView('table')
+                return next
+              })
+              setFilterStage('__all__')
+              setCierres30Only(false)
+              setGanadasMesOnly(false)
+            }}
+          >
+            {facturadasView ? 'Volver a cotizaciones' : 'Facturadas'}
+          </Button>
+          {!facturadasView && (
+            <div className="flex rounded-md border overflow-hidden">
+              <button onClick={() => setView('kanban')}
+                className={cn('px-3 py-1.5 text-xs flex items-center gap-1.5 transition-colors',
+                  view === 'kanban' ? 'bg-gray-900 text-white' : 'text-gray-500 hover:bg-gray-50')}>
+                <LayoutGrid size={13} /> Kanban
+              </button>
+              <button onClick={() => setView('table')}
+                className={cn('px-3 py-1.5 text-xs flex items-center gap-1.5 border-l transition-colors',
+                  view === 'table' ? 'bg-gray-900 text-white' : 'text-gray-500 hover:bg-gray-50')}>
+                <List size={13} /> Tabla
+              </button>
+            </div>
+          )}
           {profile?.role !== 'reader' && (
             <Button size="sm" className="h-8 text-xs gap-1.5"
               onClick={() => { setSelected(null); setDialogOpen(true) }}>
@@ -329,6 +390,11 @@ export default function QuotesPage({ initialStage }: { initialStage?: QuoteStage
 
       {/* Filtros */}
       <div className="bg-gray-50 border-b px-6 py-2 flex flex-wrap gap-3 items-center shrink-0">
+        {facturadasView && (
+          <p className="text-xs text-teal-800 bg-teal-50 border border-teal-100 rounded-md px-2.5 py-1 w-full sm:w-auto">
+            Cotizaciones facturadas con factura SII vinculada. Use el lápiz para corregir el folio si se equivocó.
+          </p>
+        )}
         {(cierres30Only || ganadasMesOnly) && (
           <p className="text-xs text-emerald-800 bg-emerald-50 border border-emerald-100 rounded-md px-2.5 py-1 w-full sm:w-auto">
             {cierres30Only && 'Filtro del panel: cierre estimado en los próximos 30 días (pipeline activo).'}
@@ -340,8 +406,10 @@ export default function QuotesPage({ initialStage }: { initialStage?: QuoteStage
           className="max-w-xs h-8 text-sm" />
         <Select
           value={filterStage}
+          disabled={facturadasView}
           onValueChange={v => {
             setFilterStage(v)
+            setFacturadasView(false)
             setCierres30Only(false)
             setGanadasMesOnly(false)
             setSearchParams(prev => {
@@ -358,18 +426,115 @@ export default function QuotesPage({ initialStage }: { initialStage?: QuoteStage
           <SelectContent>
             <SelectItem value="__all__">Todos los estados</SelectItem>
             <SelectItem value="__pipeline__">Solo pipeline (borrador + negociación + enviada)</SelectItem>
-            {STAGES.map(s => <SelectItem key={s.key} value={s.key}>{s.label}</SelectItem>)}
+            {ALL_STAGES.map(s => <SelectItem key={s.key} value={s.key}>{s.label}</SelectItem>)}
           </SelectContent>
         </Select>
       </div>
 
       {loading ? (
         <div className="flex-1 flex items-center justify-center text-sm text-gray-400">Cargando...</div>
-      ) : view === 'kanban' ? (
+      ) : facturadasView || view === 'table' ? (
+
+        /* TABLA */
+        <div className="px-6 py-4 overflow-auto flex-1">
+          <div className="bg-white rounded-lg border overflow-hidden">
+            <Table>
+              <TableHeader>
+                <TableRow className="bg-gray-50 hover:bg-gray-50">
+                  <TableHead className="text-xs font-semibold text-gray-700">N°</TableHead>
+                  <TableHead className="text-xs font-semibold text-gray-700">Título / Negocio</TableHead>
+                  <TableHead className="text-xs font-semibold text-gray-700">Empresa</TableHead>
+                  <TableHead className="text-xs font-semibold text-gray-700">KAM</TableHead>
+                  <TableHead className="text-xs font-semibold text-gray-700">Estado</TableHead>
+                  <TableHead className="text-xs font-semibold text-gray-700">Factura SII</TableHead>
+                  <TableHead className="text-xs font-semibold text-gray-700 text-right">Total</TableHead>
+                  <TableHead className="text-xs font-semibold text-gray-700">Cierre est.</TableHead>
+                  <TableHead className="text-xs font-semibold text-gray-700">Creado</TableHead>
+                  <TableHead />
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {filtered.length === 0 ? (
+                  <TableRow><TableCell colSpan={10} className="py-12 text-center text-gray-400">No hay cotizaciones</TableCell></TableRow>
+                ) : filtered.map(q => {
+                  const st = STAGE_MAP[q.stage]
+                  const userCanEdit = canEdit(q.kam?.id ?? '')
+                  const invoiceInfo = invoiceLinksByQuote.get(q.id)
+                  const expired = q.valid_until && q.valid_until < today && !['aceptada','pendiente_facturar','facturada','rechazada'].includes(q.stage)
+                  return (
+                    <TableRow key={q.id} id={`quote-row-${q.id}`}
+                      className={highlightId === q.id ? 'bg-blue-50' : 'hover:bg-gray-50'}>
+                      <TableCell className="font-mono text-xs text-gray-400">{q.quote_number}</TableCell>
+                      <TableCell className="text-sm text-gray-800 max-w-[200px] truncate">
+                        {q.title || '—'}
+                        {expired && <span className="ml-2 text-[10px] text-red-400 font-normal">Vencida</span>}
+                      </TableCell>
+                      <TableCell className="text-sm text-gray-700">
+                        {q.company?.id ? (
+                          <Link
+                            to={`/companies/${q.company.id}/v2?cfTab=quotes`}
+                            className="text-violet-700 hover:text-violet-900 hover:underline font-medium"
+                            onClick={e => e.stopPropagation()}
+                          >
+                            {q.company.name}
+                          </Link>
+                        ) : (
+                          <span className="text-gray-500">—</span>
+                        )}
+                      </TableCell>
+                      <TableCell className="text-sm text-gray-600">{q.kam?.full_name ?? '—'}</TableCell>
+                      <TableCell>
+                        <span className={cn('inline-flex px-2 py-0.5 rounded-full text-xs font-medium', st?.color, st?.bg.split(' ')[0])}>
+                          {st?.label ?? q.stage}
+                        </span>
+                      </TableCell>
+                      <TableCell className="text-xs">
+                        {invoiceInfo?.invoice_number ? (
+                          <div className="flex flex-col">
+                            <span className="font-medium text-gray-700">{invoiceInfo.invoice_number}</span>
+                            <Link to="/sii" className="text-violet-700 hover:underline">
+                              Ver en SII
+                            </Link>
+                          </div>
+                        ) : (
+                          <span className="text-gray-400">—</span>
+                        )}
+                      </TableCell>
+                      <TableCell className="text-right font-medium text-sm tabular-nums">
+                        {q.total > 0 ? fmtCurrency(q.total, q.currency) : '—'}
+                      </TableCell>
+                      <TableCell className="text-sm text-gray-500">
+                        {q.expected_close ? fmtDate(q.expected_close) : '—'}
+                      </TableCell>
+                      <TableCell className="text-sm text-gray-400">{fmtDate(q.created_at)}</TableCell>
+                      <TableCell>
+                        <div className="flex gap-1 justify-end">
+                          <Button size="sm" variant="ghost"
+                            onClick={() => { setSelected(q); setDialogOpen(true) }}
+                            title={userCanEdit ? 'Editar' : 'Ver detalle'}>
+                            <Pencil size={14} className={userCanEdit ? '' : 'text-gray-300'} />
+                          </Button>
+                          {userCanEdit && (
+                            <Button size="sm" variant="ghost" className="text-red-400 hover:text-red-600"
+                              onClick={() => setDeleteId(q.id)}>
+                              <Trash2 size={14} />
+                            </Button>
+                          )}
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  )
+                })}
+              </TableBody>
+            </Table>
+          </div>
+        </div>
+
+      ) : (
 
         /* KANBAN */
         <div className="flex-1 bg-gray-100 flex gap-2 p-3 overflow-x-auto overflow-y-hidden">
-          {STAGES.map(({ key, label, color, bg, dot, dropBg }) => {
+          {KANBAN_STAGES.map(({ key, label, color, bg, dot, dropBg }) => {
             const cards  = byStage(key)
             const sum    = stageTotal(key)
             const isOver = dragOver === key
@@ -403,6 +568,7 @@ export default function QuotesPage({ initialStage }: { initialStage?: QuoteStage
                     <KanbanCard
                       key={q.id}
                       quote={q}
+                      invoiceLink={invoiceLinksByQuote.get(q.id)}
                       today={today}
                       highlighted={highlightId === q.id}
                       draggable={canEdit(q.kam?.id ?? '')}
@@ -417,89 +583,6 @@ export default function QuotesPage({ initialStage }: { initialStage?: QuoteStage
               </div>
             )
           })}
-        </div>
-
-      ) : (
-
-        /* TABLA */
-        <div className="px-6 py-4 overflow-auto flex-1">
-          <div className="bg-white rounded-lg border overflow-hidden">
-            <Table>
-              <TableHeader>
-                <TableRow className="bg-gray-50 hover:bg-gray-50">
-                  <TableHead className="text-xs font-semibold text-gray-700">N°</TableHead>
-                  <TableHead className="text-xs font-semibold text-gray-700">Título / Negocio</TableHead>
-                  <TableHead className="text-xs font-semibold text-gray-700">Empresa</TableHead>
-                  <TableHead className="text-xs font-semibold text-gray-700">KAM</TableHead>
-                  <TableHead className="text-xs font-semibold text-gray-700">Estado</TableHead>
-                  <TableHead className="text-xs font-semibold text-gray-700 text-right">Total</TableHead>
-                  <TableHead className="text-xs font-semibold text-gray-700">Cierre est.</TableHead>
-                  <TableHead className="text-xs font-semibold text-gray-700">Creado</TableHead>
-                  <TableHead />
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {filtered.length === 0 ? (
-                  <TableRow><TableCell colSpan={9} className="py-12 text-center text-gray-400">No hay cotizaciones</TableCell></TableRow>
-                ) : filtered.map(q => {
-                  const st = STAGE_MAP[q.stage]
-                  const userCanEdit = canEdit(q.kam?.id ?? '')
-                  const expired = q.valid_until && q.valid_until < today && !['aceptada','facturada','rechazada'].includes(q.stage)
-                  return (
-                    <TableRow key={q.id} id={`quote-row-${q.id}`}
-                      className={highlightId === q.id ? 'bg-blue-50' : 'hover:bg-gray-50'}>
-                      <TableCell className="font-mono text-xs text-gray-400">{q.quote_number}</TableCell>
-                      <TableCell className="text-sm text-gray-800 max-w-[200px] truncate">
-                        {q.title || '—'}
-                        {expired && <span className="ml-2 text-[10px] text-red-400 font-normal">Vencida</span>}
-                      </TableCell>
-                      <TableCell className="text-sm text-gray-700">
-                        {q.company?.id ? (
-                          <Link
-                            to={`/companies/${q.company.id}/v2?cfTab=quotes`}
-                            className="text-violet-700 hover:text-violet-900 hover:underline font-medium"
-                            onClick={e => e.stopPropagation()}
-                          >
-                            {q.company.name}
-                          </Link>
-                        ) : (
-                          <span className="text-gray-500">—</span>
-                        )}
-                      </TableCell>
-                      <TableCell className="text-sm text-gray-600">{q.kam?.full_name ?? '—'}</TableCell>
-                      <TableCell>
-                        <span className={cn('inline-flex px-2 py-0.5 rounded-full text-xs font-medium', st?.color, st?.bg.split(' ')[0])}>
-                          {st?.label ?? q.stage}
-                        </span>
-                      </TableCell>
-                      <TableCell className="text-right font-medium text-sm tabular-nums">
-                        {q.total > 0 ? fmtCurrency(q.total, q.currency) : '—'}
-                      </TableCell>
-                      <TableCell className="text-sm text-gray-500">
-                        {q.expected_close ? fmtDate(q.expected_close) : '—'}
-                      </TableCell>
-                      <TableCell className="text-sm text-gray-400">{fmtDate(q.created_at)}</TableCell>
-                      <TableCell>
-                        <div className="flex gap-1 justify-end">
-                          <Button size="sm" variant="ghost"
-                            onClick={() => { setSelected(q); setDialogOpen(true) }}
-                            title={userCanEdit ? 'Editar' : 'Ver detalle'}>
-                            <Pencil size={14} className={userCanEdit ? '' : 'text-gray-300'} />
-                          </Button>
-                          {userCanEdit && (
-                            <Button size="sm" variant="ghost" className="text-red-400 hover:text-red-600"
-                              onClick={() => setDeleteId(q.id)}>
-                              <Trash2 size={14} />
-                            </Button>
-                          )}
-                        </div>
-                      </TableCell>
-                    </TableRow>
-                  )
-                })}
-              </TableBody>
-            </Table>
-          </div>
         </div>
       )}
 
@@ -533,31 +616,17 @@ export default function QuotesPage({ initialStage }: { initialStage?: QuoteStage
           setDialogOpen(false)
           loadQuotes()
           invalidateQuoteFollowupAgendaQueries(queryClient)
+          void queryClient.invalidateQueries({ queryKey: ['quote-invoice-links'] })
         }}
       />
 
-      {invoiceKanban && (
-        <QuoteInvoiceValidationDialog
-          open
-          quoteId={invoiceKanban.id}
-          companyId={invoiceKanban.company_id}
-          quoteNumber={invoiceKanban.quote_number}
-          quoteTotal={invoiceKanban.total}
-          quoteCurrency={invoiceKanban.currency}
-          onClose={() => setInvoiceKanban(null)}
-          onCompleted={() => {
-            setInvoiceKanban(null)
-            void loadQuotes()
-            invalidateQuoteFollowupAgendaQueries(queryClient)
-          }}
-        />
-      )}
     </div>
   )
 }
 
 function KanbanCard({
   quote,
+  invoiceLink,
   onClick,
   draggable,
   onDragStart,
@@ -565,14 +634,16 @@ function KanbanCard({
   highlighted,
 }: {
   quote: QuoteRow
+  invoiceLink?: QuoteInvoiceLinkSummary
   onClick: () => void
   draggable: boolean
   onDragStart: (e: React.DragEvent) => void
   today: string
   highlighted?: boolean
 }) {
+  const invoiceBadge = quotePendingInvoiceBadge(quote, invoiceLink)
   const expired = quote.valid_until && quote.valid_until < today
-    && !['aceptada','facturada','rechazada'].includes(quote.stage)
+    && !['aceptada','pendiente_facturar','facturada','rechazada'].includes(quote.stage)
   return (
     <div
       id={`kanban-card-${quote.id}`}
@@ -628,6 +699,11 @@ function KanbanCard({
         </div>
       )}
       {expired && <p className="text-[9px] text-red-400 mt-1 font-medium">Vencida</p>}
+      {invoiceBadge && (
+        <p className={cn('text-[9px] mt-1 font-medium leading-snug', invoiceBadge.className)}>
+          {invoiceBadge.label}
+        </p>
+      )}
     </div>
   )
 }
