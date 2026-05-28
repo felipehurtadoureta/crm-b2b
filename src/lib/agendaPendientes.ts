@@ -307,36 +307,38 @@ export async function fetchPendientes(opts: FetchPendientesOpts): Promise<Pendie
             period: periodo,
           }),
         )
-        .map((r: any) => {
+        .flatMap((r: Record<string, unknown>): PendienteItem[] => {
           const day = Number(r.rental_billing_day)
           const fecha = rentalAlertDate(periodo, day)
-          if (fecha < desde || fecha > hasta) return null
+          if (fecha < desde || fecha > hasta) return []
           const co = firstEmbedded<{ name?: string | null }>(r.company)
           const empresa = co?.name?.trim() ? String(co.name) : 'Empresa'
-          const monto = monthlyByQuote.get(r.id) ?? 0
+          const quoteId = String(r.id)
+          const monto = monthlyByQuote.get(quoteId) ?? 0
           const cur = (r.currency as string) || 'CLP'
           const periodLabel = formatBillingPeriodLabel(periodo)
-          return {
-            key: `rental:${r.id}:${periodo}`,
-            fuente: 'rental_billing' as const,
-            fecha,
-            titulo: `Facturar mensualidad · ${r.quote_number ?? r.id.slice(0, 8)}`,
-            subtitulo: `${empresa} · ${periodLabel}`,
-            detalleEvento:
-              monto > 0
-                ? `Monto mensual estimado: ${monto.toLocaleString('es-CL')} ${cur} (líneas en arriendo mensual).`
-                : 'Cotización con líneas en arriendo mensual.',
-            companyId: r.company_id,
-            companyName: empresa,
-            quoteId: r.id,
-            quoteNumber: r.quote_number,
-            quoteKamId: r.kam_id ?? undefined,
-            rentalBillingPeriod: periodo,
-            rentalMonthlyAmount: monto,
-            rentalCurrency: cur,
-          }
+          return [
+            {
+              key: `rental:${quoteId}:${periodo}`,
+              fuente: 'rental_billing',
+              fecha,
+              titulo: `Facturar mensualidad · ${(r.quote_number as string) ?? quoteId.slice(0, 8)}`,
+              subtitulo: `${empresa} · ${periodLabel}`,
+              detalleEvento:
+                monto > 0
+                  ? `Monto mensual estimado: ${monto.toLocaleString('es-CL')} ${cur} (líneas en arriendo mensual).`
+                  : 'Cotización con líneas en arriendo mensual.',
+              companyId: String(r.company_id),
+              companyName: empresa,
+              quoteId,
+              quoteNumber: r.quote_number as string | undefined,
+              quoteKamId: (r.kam_id as string | null) ?? undefined,
+              rentalBillingPeriod: periodo,
+              rentalMonthlyAmount: monto,
+              rentalCurrency: cur,
+            },
+          ]
         })
-        .filter((p): p is PendienteItem => p != null)
     }
   } catch (e) {
     console.warn('[agenda] rental billing', e)
